@@ -291,3 +291,15 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 - **Decision (user):** Kokoro sounds much more natural than Piper, so we keep Kokoro and run it through **PyTorch CUDA 12.8**, which supports Blackwell (sm_120). This costs a ~3 GB download.
 - **STT confirmed:** Parakeet on DirectML beats faster-whisper on CUDA. faster-whisper stays as the backup.
 - Silero VAD stays on the CPU (0.08 ms per frame, which is faster than the GPU for such a tiny model).
+
+### Phase 2 results
+
+| Phase | Metric | Target | Measured |
+|---|---|---|---|
+| 2 | Silero VAD streaming on test clip (speech 1.00–2.96 s) | detects 1 segment | ✅ start 1.12 s, end 2.91 s, same result for any block size |
+| 2 | `player.stop()` → silence at sound card (real WASAPI speaker) | — | ✅ 3–19 ms (10 tries) |
+| 2 | Stop → silence heard (incl. 40 ms WASAPI buffer) | < 150 ms | ✅ ~45–60 ms |
+| 2 | Live barge-in with a real mic (`bench/bargein_demo.py`, 20 tries) | < 150 ms | ⏳ needs a microphone |
+
+- On top of the stop time, the VAD needs ~160 ms of real speech before it counts as an interruption, so coughs and clicks don't stop the agent. That window is tuned in Phase 7.
+- PyTorch download (for Kokoro on the GPU) is very slow (~25 KB/s from download.pytorch.org). It's resumable, saved to `C:\Users\ZAH\Downloads\voiceai-wheels\`. Until it arrives, the demos use Kokoro on the CPU.

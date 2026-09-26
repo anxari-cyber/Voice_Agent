@@ -25,7 +25,7 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 | Part | Choice | Why | Backup |
 |---|---|---|---|
 | **STT** | **NVIDIA Parakeet-TDT-0.6B-v2** (English) via `onnx-asr` | More accurate *and* much faster than Whisper for English. TDT decoding has no beam search and no hallucination loops, and it gives word timestamps. | faster-whisper `small.en`, already installed and working on CUDA |
-| **TTS** | **Kokoro-82M** via `kokoro-onnx` | Natural, human-like voice at a very small size (82M), fast, with a streaming API (`create_stream`). Piper is faster on CPU but sounds robotic. | Piper |
+| **TTS** | **Kokoro-82M** via **PyTorch (CUDA 12.8)** *(changed in Phase 0: onnxruntime can't run Kokoro on the RTX 5050 GPU)* | Natural, human-like voice at a very small size (82M), fast, with a streaming API (`create_stream`). Piper is faster on CPU but sounds robotic. | Piper |
 | **LLM** | **Qwen3-4B-Instruct-2507, Q4_K_M, via Ollama** | Ollama is already installed and runs llama.cpp inside. It streams, `keep_alive` keeps the model in VRAM, and closing the HTTP stream cancels generation (needed for barge-in). It's non-thinking, so it answers quickly. | llama-server, only if the benchmark shows Ollama's time to first token is over 150 ms |
 | VAD | Silero v6 (already bundled) | Already on disk | none |
 | Turn detection | Pipecat smart-turn v3 (ONNX, small) | Semantic end-of-turn detection, local | silence-only rule |
@@ -272,3 +272,22 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 |---|---|---|---|
 
 
+| 0 | Qwen3-4B placement | 100% GPU | ✅ 100% GPU, 3.2 GB VRAM |
+| 0 | Qwen3-4B generation speed | > 60 tok/s | ✅ 120 tok/s |
+| 0 | Qwen3-4B warm prompt processing | — | 11 ms (cold load 9.4 s, once at startup) |
+| 0 | onnxruntime CUDA on RTX 5050 | works | ❌ session loads, but the first Conv fails in cuDNN and silently falls back to CPU |
+| 0 | onnxruntime DirectML on RTX 5050 | works | ✅ works for Parakeet. ❌ Kokoro fails (ConvTranspose error) |
+| 0 | **Parakeet v2 int8, DirectML** (3.4 s clip) | < 100 ms | ✅ **74 ms**, perfect transcript |
+| 0 | Parakeet v2 int8, CPU | — | 104 ms, perfect transcript |
+| 0 | faster-whisper small.en, CUDA | — | 108 ms, perfect transcript |
+| 0 | Kokoro ONNX fp32, CPU, 6-word clause | < 120 ms | ❌ 307 ms (int8 is worse: 1120 ms) |
+| 0 | Smart Turn v3.2 (CPU) | loads | ✅ input `[batch, 80, 800]` mel features |
+
+### Phase 0 notes
+
+- `onnxruntime-directml` replaces the CPU `onnxruntime` package. Only one onnxruntime package can be installed at a time.
+- `kokoro-onnx` is installed with `--no-deps` so it doesn't pull the CPU `onnxruntime` back in. Its other dependencies (`espeakng-loader`, `phonemizer-fork`) are installed separately.
+- Parakeet starts with the **int8** model (~670 MB) because the fp32 model is 2.4 GB. If int8 isn't fast enough on DirectML, Phase 3 downloads fp32.
+- **Decision (user):** Kokoro sounds much more natural than Piper, so we keep Kokoro and run it through **PyTorch CUDA 12.8**, which supports Blackwell (sm_120). This costs a ~3 GB download.
+- **STT confirmed:** Parakeet on DirectML beats faster-whisper on CUDA. faster-whisper stays as the backup.
+- Silero VAD stays on the CPU (0.08 ms per frame, which is faster than the GPU for such a tiny model).

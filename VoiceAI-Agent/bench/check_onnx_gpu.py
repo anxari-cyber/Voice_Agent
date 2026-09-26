@@ -57,12 +57,16 @@ def check(model: Path, provider: str, runs: int = 50) -> None:
     except Exception as error:  # noqa: BLE001
         print(f"  {provider}: FAILED at inference ({error})")
         return
+    # onnxruntime silently retries on CPU when a GPU kernel fails, so check again after running.
+    if session.get_providers()[0] != provider:
+        print(f"  {provider}: FAILED at inference (silently fell back to CPU)")
+        return
     print(f"  {provider}: OK, {elapsed_ms:.2f} ms per run")
 
 
 def main() -> None:
     model = Path(sys.argv[1]) if len(sys.argv) > 1 else default_model()
-    if hasattr(ort, "preload_dlls"):
+    if hasattr(ort, "preload_dlls") and "CUDAExecutionProvider" in ort.get_available_providers():
         ort.preload_dlls()  # load CUDA/cuDNN DLLs from the nvidia-* pip packages
     available = ort.get_available_providers()
     print(f"onnxruntime {ort.__version__} ({ort.get_device()})")

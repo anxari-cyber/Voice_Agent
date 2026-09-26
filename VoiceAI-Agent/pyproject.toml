@@ -18,6 +18,11 @@ dependencies = [
     "numpy>=1.26.0",
     "pydantic-settings>=2.6.0",
     "sounddevice>=0.5.0",
+    # Parakeet STT. Uses onnxruntime-directml because the CUDA build of onnxruntime
+    # cannot run on RTX 50-series (Blackwell) GPUs. Only one onnxruntime package may be
+    # installed: if faster-whisper pulls in plain "onnxruntime", uninstall it afterwards.
+    "onnx-asr[hub]>=0.12.0",
+    "onnxruntime-directml>=1.23.0",
 ]
 
 [project.optional-dependencies]

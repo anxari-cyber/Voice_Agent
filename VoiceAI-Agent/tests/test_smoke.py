@@ -2,15 +2,17 @@ import numpy as np
 
 from agent.gemini_client import GeminiClient, GeminiError
 from config.settings import Settings
+from voice.audio_devices import AudioDevice
 from voice.microphone import Microphone
 
 
 def test_default_settings() -> None:
-    settings = Settings()
+    settings = Settings(_env_file=None)
 
     assert settings.model == "gemini-3.8-flash"
     assert isinstance(settings.gemini_api_key, str)
-    assert settings.project_root is None or settings.project_root.is_dir()
+    assert settings.project_root is None
+    assert settings.mic_device is None
 
 
 def test_gemini_client_generates_visible_text(monkeypatch) -> None:
@@ -73,7 +75,7 @@ def test_microphone_records_from_speech_until_silence(monkeypatch) -> None:
     monkeypatch.setattr("voice.microphone.sd.InputStream", lambda **kwargs: FakeStream())
 
     microphone = Microphone(sample_rate=40)
-    monkeypatch.setattr(microphone, "find_device", lambda: 3)
+    microphone._device = AudioDevice(3, "Test Mic", "MME", 1, 0, 16_000.0)
 
     audio = microphone.record_until_silence(
         max_seconds=5,

@@ -6,34 +6,36 @@ from collections import deque
 import numpy as np
 import sounddevice as sd
 
+from voice.audio_devices import AudioDevice, resolve_device, stream_settings
+
 
 class Microphone:
-    def __init__(self, device_name: str = "AirPods Pro", sample_rate: int = 16_000) -> None:
-        self.device_name = device_name
+    def __init__(self, device: str | int | None = None, sample_rate: int = 16_000) -> None:
+        """`device` is a name substring or index; None uses the system default microphone."""
+        self.requested_device = device
         self.sample_rate = sample_rate
+        self._device: AudioDevice | None = None
 
-    def find_device(self) -> int:
-        for index, device in enumerate(sd.query_devices()):
-            if self.device_name.lower() in device["name"].lower() and device["max_input_channels"] > 0:
-                return index
-        raise RuntimeError(f"Microphone input not found: {self.device_name}")
+    @property
+    def device(self) -> AudioDevice:
+        if self._device is None:
+            self._device = resolve_device("input", self.requested_device)
+        return self._device
 
-    def _device_index(self) -> int:
-        device_index = self.find_device()
-        return device_index
+    def _stream_kwargs(self) -> dict:
+        return {
+            "samplerate": self.sample_rate,
+            "channels": 1,
+            "dtype": "float32",
+            "device": self.device.index,
+            "extra_settings": stream_settings(self.device),
+        }
 
     def record(self, seconds: float) -> np.ndarray:
         if seconds <= 0:
             raise ValueError("Recording duration must be greater than zero.")
 
-        device_index = self._device_index()
-        audio = sd.rec(
-            int(seconds * self.sample_rate),
-            samplerate=self.sample_rate,
-            channels=1,
-            dtype="float32",
-            device=device_index,
-        )
+        audio = sd.rec(int(seconds * self.sample_rate), **self._stream_kwargs())
         sd.wait()
         return audio[:, 0]
 
@@ -56,17 +58,10 @@ class Microphone:
         if speech_start_blocks <= 0 or pre_roll_seconds < 0:
             raise ValueError("Speech start blocks must be positive and pre-roll cannot be negative.")
 
-        device_index = self._device_index()
         block_size = max(1, int(self.sample_rate * block_duration))
         calibration_size = max(1, int(self.sample_rate * calibration_seconds))
 
-        with sd.InputStream(
-            samplerate=self.sample_rate,
-            blocksize=block_size,
-            channels=1,
-            dtype="float32",
-            device=device_index,
-        ) as stream:
+        with sd.InputStream(blocksize=block_size, **self._stream_kwargs()) as stream:
             if calibration_seconds:
                 ambient, _ = stream.read(calibration_size)
                 ambient_rms = self._rms(ambient)

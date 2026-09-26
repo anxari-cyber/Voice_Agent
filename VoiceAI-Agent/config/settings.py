@@ -11,6 +11,10 @@ class Settings(BaseSettings):
     stt_model: str = "small.en"
     stt_device: str = "auto"
     stt_compute_type: str = "auto"
+    # Name substring or index; empty means the system default device.
+    mic_device: str | None = None
+    speaker_device: str | None = None
+    latency_log: Path = Path("logs/latency.jsonl")
 
     model_config = SettingsConfigDict(env_file=".env", env_prefix="VOICEAI_", extra="ignore")
 

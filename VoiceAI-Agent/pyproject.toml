@@ -30,7 +30,7 @@ dev = [
 voiceai = "app.main:main"
 
 [tool.setuptools.packages.find]
-include = ["app*", "agent*", "config*", "models*", "progress*", "security*", "tools*", "voice*"]
+include = ["app*", "agent*", "config*", "metrics*", "models*", "progress*", "security*", "tools*", "voice*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

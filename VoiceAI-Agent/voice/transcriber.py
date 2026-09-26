@@ -30,7 +30,7 @@ class Transcriber:
         try:
             return self._transcribe(audio)
         except RuntimeError as error:
-            if self.device != "cuda":
+            if self.device != "cuda" or not _is_cuda_error(error):
                 raise
             print(f"CUDA inference unavailable ({error}). Falling back to CPU int8.")
             self.model = WhisperModel(self.model_name, device="cpu", compute_type="int8")
@@ -53,9 +53,13 @@ class Transcriber:
                 "min_silence_duration_ms": 500,
             },
         )
-        accepted_segments = []
-        for segment in segments:
-            if segment.no_speech_prob >= 0.4 or segment.avg_logprob < -0.6:
-                continue
-            accepted_segments.append(segment.text.strip())
-        return " ".join(text for text in accepted_segments if text).strip()
+        # faster-whisper already skips a segment when no_speech_prob > no_speech_threshold AND
+        # avg_logprob < log_prob_threshold. A second, stricter OR filter here used to drop
+        # short or quiet commands that were transcribed correctly.
+        texts = (segment.text.strip() for segment in segments)
+        return " ".join(text for text in texts if text).strip()
+
+
+def _is_cuda_error(error: Exception) -> bool:
+    message = str(error).lower()
+    return any(marker in message for marker in ("cuda", "cublas", "cudnn", "gpu"))

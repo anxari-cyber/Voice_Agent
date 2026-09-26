@@ -282,6 +282,9 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 | 0 | faster-whisper small.en, CUDA | — | 108 ms, perfect transcript |
 | 0 | Kokoro ONNX fp32, CPU, 6-word clause | < 120 ms | ❌ 307 ms (int8 is worse: 1120 ms) |
 | 0 | Smart Turn v3.2 (CPU) | loads | ✅ input `[batch, 80, 800]` mel features |
+| 0 | **Kokoro-82M, PyTorch 2.11 + CUDA 12.8, GPU**, 6-word clause | < 120 ms | ✅ **61 ms** ("Sure." 56 ms, 9-word sentence 72 ms) |
+| 0 | Kokoro-82M PyTorch, CPU, 6-word clause | — | 455 ms |
+| 0 | Kokoro VRAM | — | 663 MB |
 
 ### Phase 0 notes
 
@@ -303,3 +306,18 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 
 - On top of the stop time, the VAD needs ~160 ms of real speech before it counts as an interruption, so coughs and clicks don't stop the agent. That window is tuned in Phase 7.
 - PyTorch download (for Kokoro on the GPU) is very slow (~25 KB/s from download.pytorch.org). It's resumable, saved to `C:\Users\ZAH\Downloads\voiceai-wheels\`. Until it arrives, the demos use Kokoro on the CPU.
+
+### Phase 3 progress (STT)
+
+| Phase | Metric | Target | Measured |
+|---|---|---|---|
+| 3 | Parakeet on DirectML, real utterances (varying length) | — | ❌ 300–390 ms per utterance (Phase 0's 74 ms didn't hold up) |
+| 3 | **Parakeet on CPU**, real utterances | < 100 ms | ✅ 65–130 ms → **CPU is the default**, which also keeps the GPU free |
+| 3 | Live: speech end → final text (incl. 200 ms VAD wait), AirPods | < 300 ms | ✅ p50 270 ms, p95 568 ms (10 turns) |
+| 3 | Accuracy with the AirPods Bluetooth mic | WER < 8% | ❌ many wrong words. Causes found below |
+
+**Accuracy problems found and fixed:**
+1. **Sentences were split at 200 ms pauses**, so each fragment was guessed without context. Fix: a pause shorter than 0.7 s is joined back into the same sentence (`StreamingSTT.resume`). The decode still starts after 200 ms, so speed is unchanged.
+2. **The start of speech was sometimes cut off.** Fix: pre-roll raised from 300 to 500 ms.
+3. **The audio clips** (peak 1.00) on loud speech. Fix: set the Windows mic input volume to about 70%.
+4. **The Bluetooth hands-free mic** gives phone-call quality audio. A wired headset is recommended.

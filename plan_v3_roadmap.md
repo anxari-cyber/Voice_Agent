@@ -78,11 +78,11 @@ Already built and measured (see `implementation.md` → Results):
 3. **Drop `kokoro-onnx`:** it fails on DirectML and is 5–10× slower on CPU than Kokoro in PyTorch. In Step 1.3, switch `bench/bargein_demo.py` and `bench/phase0_smoke.py` to `KokoroTTS`, then remove the package and `models/kokoro/`.
 4. **Step 1.4, long speech (over 8 s):** only build it if measurements show it's needed. Measure Parakeet CPU time on 20 s of audio first.
 5. **Step 1.6, first check:** confirm that Ollama really stops a cancelled generation, and that the new request doesn't queue behind it (`OLLAMA_NUM_PARALLEL`).
-6. **Step 2.1:** Smart Turn needs 80-bin Whisper log-mel features. Reuse `transformers.WhisperFeatureExtractor` (already installed).
+6. **Step 2.1:** Smart Turn needs 80-bin Whisper log-mel features. Reuse `transformers.WhisperFeatureExtractor`. It's installed today only as an indirect dependency of `kokoro`, so **add `transformers` to `pyproject.toml` explicitly in Step 2.1**.
 7. **New tool:** `bench/record_commands.py` records the user's 30 commands with reference text, for WER (Step 1.4).
 8. **Hardware:** several checks assume a **wired mic**. The user currently has AirPods (Bluetooth). Checkpoint reports flag this.
 9. **Docs:** this file is the plan. `implementation.md` stays as the log of results.
-10. **VAD model:** the Silero VAD ONNX file is copied into `models/`, so faster-whisper can become optional (Step 0.1).
+10. **VAD model:** the Silero VAD v6 ONNX file (MIT, from faster-whisper) is stored in git at `voice/assets/silero_vad_v6.onnx`, so faster-whisper can be optional (Step 0.1, done). It's listed in `THIRD_PARTY_NOTICES.md`.
 
 ---
 
@@ -290,6 +290,7 @@ Pattern adapted from `huggingface/speech-to-speech` (Apache-2.0). Credit the sou
 - If complete (probability ≥ threshold): commit right away.
 - If incomplete: wait up to ~1.5–2 s of silence before committing (a cap, so it never hangs).
 - Keep "silence-only" as the fallback engine.
+- Add `transformers` to `pyproject.toml` explicitly, for `WhisperFeatureExtractor` (amendment 6). Don't rely on it arriving through `kokoro`.
 
 **Done when:** in 20 scripted tests of complete sentences, the median commit is ≤ 300 ms after
 speech end. In 20 tests with "umm… pauses", 0 are cut off.
@@ -483,7 +484,7 @@ speakers (browser AEC), and p50 is within +100 ms of local mode.
 | GIL / audio crackle | Measured in Step 1.5, with a separate TTS process as the fallback |
 | Speculation wastes GPU time on reopens | A reopen is cheap (cancel). Log the reopen rate and tune the VAD end time |
 | Echo on speakers | Headphones locally. Browser AEC for web. WebRTC AEC is R&D |
-| Disk space on C: (10 GB free on 2026-09-29) | Move models to D: in Phase 0 (Step 0.4) using `OLLAMA_MODELS`, `HF_HOME` and `VOICEAI_MODELS_DIR` |
+| Disk space on C: | **Done 2026-09-29:** Ollama models → `D:\Ollama\Models`, HF cache → `D:\huggingface` (`HF_HOME`), caches purged. C: went from 8.3 to 58.8 GB free. **Side effect:** D: is an HDD, so the LLM cold load went from 9.4 s to 30 s (startup only; warm speed unchanged at 119 tok/s). If startup matters, move just the voice model back to the SSD |
 | Small LLM quality | Keep answers short. Hand hard tasks to tools/the Worker. Benchmark alternative 4B models |
 
 ---

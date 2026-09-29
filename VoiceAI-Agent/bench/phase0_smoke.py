@@ -45,28 +45,19 @@ def resample(audio: np.ndarray, source_rate: int, target_rate: int) -> np.ndarra
 
 
 def check_kokoro() -> tuple[np.ndarray, int]:
-    from kokoro_onnx import Kokoro
+    """Kokoro through PyTorch (the ONNX build failed on DirectML and was 5-10x slower on CPU)."""
+    from voice.tts import KokoroConfig, KokoroTTS
 
-    print("\nKokoro TTS (6-word clause / full sentence)")
+    print("\nKokoro TTS, PyTorch (6-word clause / full sentence)")
     audio, rate = None, 24_000
-    variants = [("GPU (DirectML)", PROVIDERS["GPU (DirectML)"], True),
-                ("GPU (DML basic)", PROVIDERS["GPU (DirectML)"], False),
-                ("CPU", PROVIDERS["CPU"], True)]
-    for label, providers, optimize in variants:
-        session = ort.InferenceSession(
-            str(MODELS / "kokoro" / "kokoro-v1.0.onnx"),
-            sess_options=session_options(providers, optimize),
-            providers=providers,
-        )
-        tts = Kokoro.from_session(session, str(MODELS / "kokoro" / "voices-v1.0.bin"))
-        try:
-            _, clause_ms = timed(lambda tts=tts: tts.create("Okay, I will check that.", voice="af_heart"))
-            (audio, rate), full_ms = timed(lambda tts=tts: tts.create(SENTENCE, voice="af_heart"))
-        except Exception as error:  # noqa: BLE001 - report and try the next provider
-            print(f"  {label:<15} FAILED: {str(error).splitlines()[0][:120]}")
-            continue
+    for device in ("cuda", "cpu"):
+        tts = KokoroTTS(KokoroConfig(weights_dir=MODELS / "kokoro-torch", device=device))
+        tts.warm_up()
+        _, clause_ms = timed(lambda tts=tts: tts.synthesize("Okay, I will check that."))
+        audio, full_ms = timed(lambda tts=tts: tts.synthesize(SENTENCE))
+        rate = tts.sample_rate
         seconds = len(audio) / rate
-        print(f"  {label:<15} clause {clause_ms:6.0f} ms | sentence {full_ms:6.0f} ms "
+        print(f"  {device:<15} clause {clause_ms:6.0f} ms | sentence {full_ms:6.0f} ms "
               f"for {seconds:.1f}s audio (RTF {full_ms / 1000 / seconds:.2f})")
     return audio, rate
 

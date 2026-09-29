@@ -31,6 +31,8 @@ class Settings(BaseSettings):
     tts_engine: str = "kokoro"
     tts_voice: str = "af_heart"
     tts_device: str = "cuda"
+    tts_speed: float = 1.0
+    tts_torch_threads: int = 2  # keep CPU cores free for Parakeet, the VAD and audio threads
 
     # Voice activity detection and turn taking.
     vad_threshold: float = 0.5

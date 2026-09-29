@@ -17,6 +17,7 @@ import numpy as np
 import sounddevice as sd
 
 from voice.audio_devices import AudioDevice, resolve_device, stream_settings
+from voice.resample import StatefulResampler
 
 
 class Player:
@@ -37,16 +38,38 @@ class Player:
         self._lock = threading.Lock()
         self._was_playing = False
         self._stop_requested = False
-        self.played_samples = 0
+        self._played = 0.0  # in `sample_rate` units, even when the stream runs at another rate
         self._stream: sd.OutputStream | None = None
         self.device: AudioDevice | None = None
+        self.stream_rate = sample_rate
+        self._resampler: StatefulResampler | None = None
+        self.resampling = "none"  # "none" | "wasapi-auto-convert" | "stateful-fallback"
+        self._streaming = False
+        self.underflows = 0  # sound card reported an output underflow
+        self.starved_blocks = 0  # queue ran dry in the middle of an utterance (audible gap)
+        self._maybe_gap = 0
 
     # -- lifecycle -------------------------------------------------------------------------
     def start(self) -> None:
+        """Open the speaker at the TTS rate (WASAPI converts it); if the device refuses,
+        open it at its own rate and resample here with a stateful resampler."""
         self.device = resolve_device("output", self.requested_device)
-        self._stream = sd.OutputStream(
-            samplerate=self.sample_rate,
-            blocksize=self.block_size,
+        try:
+            self._stream = self._open(self.sample_rate)
+            self.resampling = "wasapi-auto-convert" if (
+                self.device.host_api == "Windows WASAPI"
+                and int(self.device.default_samplerate) != self.sample_rate) else "none"
+        except sd.PortAudioError:
+            self.stream_rate = int(self.device.default_samplerate)
+            self._resampler = StatefulResampler(self.sample_rate, self.stream_rate)
+            self._stream = self._open(self.stream_rate)
+            self.resampling = "stateful-fallback"
+        self._stream.start()
+
+    def _open(self, rate: int) -> sd.OutputStream:
+        return sd.OutputStream(
+            samplerate=rate,
+            blocksize=rate * self.block_size // self.sample_rate,
             channels=1,
             dtype="float32",
             device=self.device.index,
@@ -54,7 +77,6 @@ class Player:
             extra_settings=stream_settings(self.device),
             callback=self._callback,
         )
-        self._stream.start()
 
     def close(self) -> None:
         if self._stream is not None:
@@ -66,9 +88,13 @@ class Player:
     def play(self, audio: np.ndarray) -> None:
         """Queue audio (float32 mono at `sample_rate`). Returns immediately."""
         chunk = np.asarray(audio, dtype=np.float32).reshape(-1)
+        if self._resampler is not None:
+            chunk = self._resampler.process(chunk)
         if chunk.size:
             with self._lock:
                 self._queue.append(chunk)
+                self.starved_blocks += self._maybe_gap  # the queue ran dry, then audio came
+                self._maybe_gap = 0
 
     def stop(self) -> None:
         """Drop everything queued. The next audio block the sound card asks for is silence."""
@@ -76,10 +102,29 @@ class Player:
             self._queue.clear()
             self._offset = 0
             self._stop_requested = self._was_playing
+            self._streaming = False
+            self._maybe_gap = 0
+        if self._resampler is not None:
+            self._resampler.reset()
 
     def reset_counter(self) -> None:
         with self._lock:
-            self.played_samples = 0
+            self._played = 0.0
+
+    @property
+    def played_samples(self) -> int:
+        """Samples that reached the sound card, in `sample_rate` (TTS) units."""
+        return round(self._played)
+
+    def begin_utterance(self) -> None:
+        """Audio is on its way: from the first played block on, an empty queue is a gap."""
+        with self._lock:
+            self._streaming = True
+
+    def end_utterance(self) -> None:
+        with self._lock:
+            self._streaming = False
+            self._maybe_gap = 0  # running dry at the very end is not a gap
 
     @property
     def is_playing(self) -> bool:
@@ -95,7 +140,9 @@ class Player:
             time.sleep(poll)
 
     # -- sound card thread -----------------------------------------------------------------
-    def _callback(self, outdata: np.ndarray, frames: int, _time: object, _status: object) -> None:
+    def _callback(self, outdata: np.ndarray, frames: int, _time: object, status: object) -> None:
+        if status and getattr(status, "output_underflow", False):
+            self.underflows += 1
         out = outdata[:, 0]
         written = 0
         with self._lock:
@@ -108,7 +155,9 @@ class Player:
                 if self._offset >= len(chunk):
                     self._queue.popleft()
                     self._offset = 0
-            self.played_samples += written
+            self._played += written * self.sample_rate / self.stream_rate
+            if self._streaming and self._was_playing and written < frames and not self._queue:
+                self._maybe_gap += 1  # only a gap if more audio follows (see play())
             started = written > 0 and not self._was_playing
             stopped = self._stop_requested
             self._stop_requested = False

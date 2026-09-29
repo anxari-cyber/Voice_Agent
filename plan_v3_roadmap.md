@@ -83,6 +83,9 @@ Already built and measured (see `implementation.md` → Results):
 8. **Hardware:** several checks assume a **wired mic**. The user currently has AirPods (Bluetooth). Checkpoint reports flag this.
 9. **Docs:** this file is the plan. `implementation.md` stays as the log of results.
 10. **VAD model:** the Silero VAD v6 ONNX file (MIT, from faster-whisper) is stored in git at `voice/assets/silero_vad_v6.onnx`, so faster-whisper can be optional (Step 0.1, done). It's listed in `THIRD_PARTY_NOTICES.md`.
+11. **GPU findings from Step 1.3** (measured):
+    - *Idle clocks:* after ≥ 10 s of GPU idle, the first LLM request pays **~120 ms extra TTFT** (P8, ~200 MHz; 155–228 ms vs 28–44 ms). A ~150 ms CUDA "nudge" right before brings it back to **34 ms**. Step 1.5 fires the nudge at VAD `speech_start` (hidden while the user is still speaking) and logs its effect.
+    - *Contention:* while the LLM generates, Kokoro's first audio goes from 43–75 ms to **147–258 ms**, and the LLM drops from 94 to 73 tok/s. Step 1.5 measures the real turn. Options if it's too slow: a shorter first clause, synthesising the first clause before the LLM gets far ahead, or trying Ollama's `num_gpu`/priority settings.
 
 ---
 

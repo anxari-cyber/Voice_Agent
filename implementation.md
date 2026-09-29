@@ -347,3 +347,13 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 | 1.2 exp | Flash attention + `OLLAMA_KV_CACHE_TYPE=q8_0` | improve? | ❌ 62 ms, **90 tok/s** (−4%), −250 MB VRAM. **Not kept** (option if VRAM gets tight later) |
 
 - **Lesson:** stopping `ollama.exe` leaves its `llama-server.exe` runners alive and holding VRAM. The next runner then lands 66% on the CPU (16 tok/s). Always stop `llama-server` too when restarting Ollama.
+| 1.3 | Kokoro first audio (text → first chunk, G2P + model + trim), GPU alone | < 120 ms | ✅ **43–75 ms** ("Okay." 43, 9-word sentence 75). RTF 0.02–0.05 |
+| 1.3 | Kokoro first audio while the LLM generates (same GPU) | < 120 ms | ❌ **147–258 ms** (up to +183 ms). LLM 94 → 73 tok/s meanwhile |
+| 1.3 | Kokoro cold first call → after `warm_up()` | — | 908 ms → 48 ms (warm-up itself 194 ms) |
+| 1.3 | Leading / trailing silence in Kokoro output | trim | was 286–405 ms / 407–524 ms. Now trimmed to 15 / 40 ms plus a punctuation pause (60–300 ms) |
+| 1.3 | End to end: text ready → LLM → chunker → Kokoro → first block played (5 answers) | — | p50 **462 ms**, max 555 ms (includes the idle-GPU TTFT penalty and GPU contention) |
+| 1.3 | Gaps between clauses | none | ✅ **0 starved blocks, 0 underflows** over 89 s of speech |
+| 1.3 | `TTSWorker.cancel()` | within 1 chunk | ✅ 0 chunks after cancel (chunk = 40 ms) |
+| 1.3 | Resampling to the 48 kHz device | — | WASAPI `auto_convert` works. The stateful resampler stays a tested fallback |
+| 1.3 | torch CPU threads | limited | 2 (setting `VOICEAI_TTS_TORCH_THREADS`) |
+| 1.3 | LLM TTFT after ≥ 10 s GPU idle, without / with a 150 ms nudge | — | 155–228 ms / **34 ms** |

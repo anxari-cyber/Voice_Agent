@@ -15,7 +15,6 @@ import queue
 import time
 
 import numpy as np
-import onnxruntime as ort
 
 from config.settings import load_settings
 from metrics.latency import LatencyLog
@@ -32,13 +31,11 @@ PARAGRAPH = (
 
 
 def synthesize(text: str) -> tuple[np.ndarray, int]:
-    from kokoro_onnx import Kokoro
+    from voice.tts import kokoro_from_settings
 
-    # Kokoro's ONNX model fails on DirectML (Phase 0), so this demo uses the CPU.
-    session = ort.InferenceSession("models/kokoro/kokoro-v1.0.onnx", providers=["CPUExecutionProvider"])
-    tts = Kokoro.from_session(session, "models/kokoro/voices-v1.0.bin")
-    audio, rate = tts.create(text, voice="af_heart")
-    return audio.astype(np.float32), rate
+    tts = kokoro_from_settings(load_settings())
+    tts.warm_up()
+    return np.concatenate(list(tts.synthesize_stream(text))), tts.sample_rate
 
 
 def main() -> None:

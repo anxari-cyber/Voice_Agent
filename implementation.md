@@ -321,3 +321,13 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 2. **The start of speech was sometimes cut off.** Fix: pre-roll raised from 300 to 500 ms.
 3. **The audio clips** (peak 1.00) on loud speech. Fix: set the Windows mic input volume to about 70%.
 4. **The Bluetooth hands-free mic** gives phone-call quality audio. A wired headset is recommended.
+
+## Roadmap v3 results
+
+| Step | Metric | Target | Measured |
+|---|---|---|---|
+| 0 | Clean install in a fresh venv following the README | works | ✅ torch `2.11.0+cu128`, CUDA True. Only `onnxruntime-directml` installed. DirectML available. 23 passed, 1 skipped |
+| 0 | Free space on C: | — | 8.3 GB → 58.0 GB (Ollama → `D:\Ollama\Models`, HF → `D:\huggingface`, caches purged) |
+| 0 | LLM cold load from D: (HDD) | — | 30.2 s (was 9.4 s from the C: SSD). Startup only; warm 119 tok/s |
+| 1.1 | `LatencyLog.mark()` p50 | < 50 µs | ✅ **0.4 µs** (was 137 µs) |
+| 1.1 | `mark()` worst call over 20k calls | — | ~300 µs (was 118,689 µs: a file-write stall on the hot path) |

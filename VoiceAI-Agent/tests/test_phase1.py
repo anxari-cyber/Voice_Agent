@@ -73,6 +73,7 @@ def test_latency_log_and_report(tmp_path) -> None:
     log.mark("speech_end", at=10.0)
     log.mark("stt_final", at=10.25)
     log.mark("playback_start", at=10.6)
+    log.flush()
 
     records = [json.loads(line) for line in (tmp_path / "latency.jsonl").read_text().splitlines()]
     assert [r["event"] for r in records] == ["speech_end", "stt_final", "playback_start"]

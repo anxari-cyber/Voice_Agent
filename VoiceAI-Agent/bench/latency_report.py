@@ -19,8 +19,13 @@ STAGES = (
     ("Final text -> full LLM reply", "stt_final", "llm_done"),
     ("First LLM token -> first TTS audio", "llm_first_token", "tts_first_audio"),
     ("First TTS audio -> playback start", "tts_first_audio", "playback_start"),
+    ("Soft end -> speculative LLM start", "turn_soft_end", "speculative_start"),
+    ("Soft end -> turn commit", "turn_soft_end", "turn_commit"),
+    ("Turn commit -> playback start", "turn_commit", "playback_start"),
     ("TOTAL: end of speech -> first audio", "speech_end", "playback_start"),
     ("Barge-in -> playback stopped", "bargein_detected", "playback_stopped"),
+    ("Barge-in -> LLM cancelled", "bargein_detected", "llm_cancel"),
+    ("Barge-in -> TTS cancelled", "bargein_detected", "tts_cancel"),
 )
 
 

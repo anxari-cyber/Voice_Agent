@@ -376,3 +376,23 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 - **The nudge** saves ~170 ms (all in TTFT). **C** is now the largest stage: ~130 ms of it is GPU contention → plan amendment #12.
 - **"Prefer maximum performance"** (NVIDIA Control Panel): idle TTFT after 10 / 20 s is 117 / 156 ms (was 169 / 155), and the GPU still drops to P8. No measurable effect; the nudge still works (43–45 ms).
 - **Open issue:** one LLM request today got no response headers for 10 s. The first-token timeout caught it. Ollama's log shows the request never reached a slot. Not reproduced in 18 follow-up tries, with or without `nvidia-smi` beforehand (≈ 1 in 70 requests today).
+
+### Step 1.4 results (STT tail decoding)
+
+| Step | Metric | Target | Measured |
+|---|---|---|---|
+| 1.4 | Parakeet CPU full decode, 3 / 5 / 8 / 12 / 16 / 20 / 30 s (amendment #4) | — | 98 / 135 / 209 / 310 / 409 / 527 / 1029 ms (~26 ms per second of audio). Tail decoding is needed from ~4 s on |
+| 1.4 | Final after speech end, 3.1 s utterance (real-time feed, 200 ms VAD silence) | < 100 ms | ✅ p50 66, max 69 ms |
+| 1.4 | Final after speech end, 20.5 s utterance | < 100 ms | ✅ p50 72, max 73 ms (full re-decode: 514 ms) |
+| 1.4 | Worst case: `finish()` right at the last word, 3.1 / 20.5 s | < 100 ms | ✅ max 67 / 64 ms |
+| 1.4 | WER, 20.5 s synthetic speech, streaming vs full decode | not worse | ✅ 0.0% / 0.0% |
+| 1.4 | WER, 30 synthetic commands (Kokoro voice), streaming vs full decode | < 8%, not worse | ⚠️ **4.6% vs 3.7%** (one phrase: "a REST API" → "arrest API"). With `trim_after = 3.0 s`: 3.7% = 3.7%, but worst-case final 107 ms |
+| 1.4 | CPU threads for the partial engine (worst-case final over 16 runs) | — | all threads 95–224 ms → **3 threads 73 ms** |
+| 1.4 | WER on the user's own recordings (wired / AirPods) | < 8% | ⏳ needs recordings (`bench.record_commands`) |
+
+**Bugs found and fixed along the way** (each one first showed up as a WER jump on real Parakeet output):
+1. Words duplicated at cut points ("check check"). Parakeet timestamps lag word onsets → **overlap anchor** of 2 confirmed words.
+2. The anchor matched a different "the" → match the **whole anchor sequence near its time**, and keep confirmed words if it isn't found.
+3. Spelling changes between decodes ("Arrest" / "AREST") → **fuzzy anchor matching** (≥ 0.75 similarity).
+4. A wrong word confirmed at the end of the audio ("3.5" for "three point four") → confirm a word only once the **next word has started ≥ 0.3 s before the end**.
+5. "settings .py" → **`join_words()`** attaches punctuation-led tokens, like the decoder's own text.

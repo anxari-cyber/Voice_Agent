@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     stt_model: str = "small.en"  # used by the whisper engine
     stt_device: str = "auto"
     stt_compute_type: str = "auto"
+    stt_partial_threads: int = 3  # CPU threads for partial decodes; the final uses all cores
+    stt_trim_after_s: float = 2.5  # decode window length before confirmed words move out
 
     # Text-to-speech.
     tts_engine: str = "kokoro"

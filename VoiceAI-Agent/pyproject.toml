@@ -21,6 +21,7 @@ dependencies = [
     #   uv pip install torch --index-url https://download.pytorch.org/whl/cu128
     "torch>=2.8",
     "kokoro>=0.9.4",
+    "num2words>=0.5",  # WER text normalisation (metrics/wer.py)
 ]
 
 [project.optional-dependencies]

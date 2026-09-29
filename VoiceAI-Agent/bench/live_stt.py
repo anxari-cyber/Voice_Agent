@@ -20,7 +20,7 @@ import numpy as np
 from config.settings import load_settings
 from metrics.latency import LatencyLog
 from voice.audio_io import MicStream
-from voice.stt import SAMPLE_RATE, StreamingSTT, create_engine
+from voice.stt import SAMPLE_RATE, streaming_from_settings
 from voice.vad import SileroVAD
 
 PRE_ROLL_MS = 500  # audio kept from before VAD fired, so the first syllable isn't cut
@@ -47,7 +47,9 @@ def main() -> None:
 
     latency = LatencyLog(settings.latency_log)
     print(f"Loading {args.engine}...")
-    stt = StreamingSTT(create_engine(args.engine))
+    # Two engine instances: partials run on one, the final on the other, so the final never
+    # waits for (or shares state with) a partial that is still running.
+    stt = streaming_from_settings(settings.model_copy(update={"stt_engine": args.engine}))
     vad = SileroVAD()
     mic = MicStream(device=settings.mic_device)
     mic.start()
@@ -56,6 +58,7 @@ def main() -> None:
     pre_roll: deque[np.ndarray] = deque(maxlen=PRE_ROLL_MS // 20)
     gap: list[np.ndarray] = []  # audio during a pause that may still be mid-sentence
     samples_seen = 0
+    origin = 0  # stream sample where the current utterance's audio starts (pre-roll included)
     finals: list[float] = []
     shown_partial = ""
     pending: tuple[str, float, float] | None = None  # (text, stopped_at, ms) awaiting confirmation
@@ -86,11 +89,15 @@ def main() -> None:
                         continue
                     latency.next_turn()
                     latency.mark("speech_start", at=happened)
-                    stt.start(np.concatenate(pre_roll) if pre_roll else None)
+                    pre = np.concatenate(pre_roll) if pre_roll else None
+                    origin = samples_seen - (len(pre) if pre is not None else 0)
+                    stt.start(pre)
                     pre_roll.clear()
                     shown_partial = ""
                 elif event.kind == "speech_end" and stt.active:
-                    text = stt.finish()
+                    # Where the speech really ended, inside this utterance: lets finish() reuse
+                    # the last partial when it already covered that point.
+                    text = stt.finish(speech_end_sample=event.sample - origin)
                     done = time.perf_counter()
                     pending = (text, happened, (done - happened) * 1000)
             if pending and arrived - pending[1] >= JOIN_WINDOW_MS / 1000:
@@ -99,7 +106,9 @@ def main() -> None:
                 latency.mark("stt_final", at=stopped_at + ms / 1000, engine=args.engine, text=text)
                 finals.append(ms)
                 save_wav(Path("logs") / f"utterance_{len(finals)}.wav", stt.audio())
-                print(f"\r  FINAL (text ready {ms:.0f} ms after you stopped): {text}\n", flush=True)
+                info = stt.last_final
+                print(f"\r  FINAL (text ready {ms:.0f} ms after you stopped; {info.get('mode')}, "
+                      f"decode {info.get('ms', 0):.0f} ms): {text}\n", flush=True)
                 pending, gap = None, []
             if stt.active and stt.partial_text != shown_partial:
                 shown_partial = stt.partial_text

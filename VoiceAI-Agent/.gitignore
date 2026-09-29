@@ -12,3 +12,5 @@ models/*
 !models/.gitkeep
 .vscode/
 *.egg-info/
+# Voice recordings for the WER test (personal data)
+bench/data/commands/

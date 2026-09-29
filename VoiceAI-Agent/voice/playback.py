@@ -27,6 +27,7 @@ class Player:
         device: str | int | None = None,
         block_ms: int = 20,
         on_event: Callable[[str, float], None] | None = None,
+        resample: str = "auto",
     ) -> None:
         """`on_event(name, perf_counter_time)` receives "playback_start" / "playback_stopped"."""
         self.sample_rate = sample_rate
@@ -43,6 +44,8 @@ class Player:
         self.device: AudioDevice | None = None
         self.stream_rate = sample_rate
         self._resampler: StatefulResampler | None = None
+        # "auto": let WASAPI convert (fallback to ours if refused); "stateful": always ours
+        self.resample_mode = resample
         self.resampling = "none"  # "none" | "wasapi-auto-convert" | "stateful-fallback"
         self._streaming = False
         self.underflows = 0  # sound card reported an output underflow
@@ -55,6 +58,8 @@ class Player:
         open it at its own rate and resample here with a stateful resampler."""
         self.device = resolve_device("output", self.requested_device)
         try:
+            if self.resample_mode == "stateful" and int(self.device.default_samplerate) != self.sample_rate:
+                raise sd.PortAudioError("stateful resampling requested")
             self._stream = self._open(self.sample_rate)
             self.resampling = "wasapi-auto-convert" if (
                 self.device.host_api == "Windows WASAPI"
@@ -63,8 +68,13 @@ class Player:
             self.stream_rate = int(self.device.default_samplerate)
             self._resampler = StatefulResampler(self.sample_rate, self.stream_rate)
             self._stream = self._open(self.stream_rate)
-            self.resampling = "stateful-fallback"
+            self.resampling = "stateful-fallback" if self.resample_mode == "auto" else "stateful-forced"
         self._stream.start()
+
+    @property
+    def output_latency_ms(self) -> float:
+        """Sound card output latency reported by PortAudio (queue -> speaker after the callback)."""
+        return float(self._stream.latency) * 1000 if self._stream is not None else 0.0
 
     def _open(self, rate: int) -> sd.OutputStream:
         return sd.OutputStream(

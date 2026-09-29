@@ -86,6 +86,13 @@ Already built and measured (see `implementation.md` → Results):
 11. **GPU findings from Step 1.3** (measured):
     - *Idle clocks:* after ≥ 10 s of GPU idle, the first LLM request pays **~120 ms extra TTFT** (P8, ~200 MHz; 155–228 ms vs 28–44 ms). A ~150 ms CUDA "nudge" right before brings it back to **34 ms**. Step 1.5 fires the nudge at VAD `speech_start` (hidden while the user is still speaking) and logs its effect.
     - *Contention:* while the LLM generates, Kokoro's first audio goes from 43–75 ms to **147–258 ms**, and the LLM drops from 94 to 73 tok/s. Step 1.5 measures the real turn. Options if it's too slow: a shorter first clause, synthesising the first clause before the LLM gets far ahead, or trying Ollama's `num_gpu`/priority settings.
+12. **GPU contention tests for Step 1.5** (the "TTS clause 1" stage is ~200 ms with the LLM running vs 43–75 ms alone, ~130 ms of it contention). Measure each one in the real turn and keep only what helps:
+    - a **shorter first clause** (2–4 words instead of up to 6), which cuts both the chunker wait (B) and the Kokoro time (C);
+    - **Kokoro in fp16** (`model.half()`), checking quality by ear as well as speed;
+    - Windows **hardware-accelerated GPU scheduling** on vs off (Settings → Display → Graphics; needs a reboot);
+    - the **torch idle nudge** fired at VAD `speech_start` while the user speaks (amendment #11). Measured: TTFT 136–163 → 35–44 ms, heard 525 → 355 ms;
+    - optional R&D: **CUDA graphs / `torch.compile`** for Kokoro (variable input lengths make this harder).
+
 
 ---
 

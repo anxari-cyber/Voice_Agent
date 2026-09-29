@@ -357,3 +357,22 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 | 1.3 | Resampling to the 48 kHz device | — | WASAPI `auto_convert` works. The stateful resampler stays a tested fallback |
 | 1.3 | torch CPU threads | limited | 2 (setting `VOICEAI_TTS_TORCH_THREADS`) |
 | 1.3 | LLM TTFT after ≥ 10 s GPU idle, without / with a 150 ms nudge | — | 155–228 ms / **34 ms** |
+
+### Before Step 1.4: where the 462 ms go (text ready → first sound)
+
+"text ready" = the `stt_final` moment: the final user transcript exists and the LLM request goes out. VAD and STT come before it.
+5 prompts per variant, 8 s GPU idle before each (like the user talking). Speaker: the 48 kHz monitor over WASAPI.
+
+| Stage | auto_convert, no nudge | auto_convert, nudge | our resampler, no nudge | our resampler, nudge |
+|---|---|---|---|---|
+| A. TTFT | 163 | **35** | 136 | 44 |
+| B. Chunker wait (tokens until clause 1 is complete) | 98 | 75 | 87 | 66 |
+| C. TTS clause 1 (LLM still generating on the GPU) | **223** | **192** | 197 | 200 |
+| D. Queue → sound-card callback | 8 | 16 | 9 | 5 |
+| E. Output latency (`stream.latency`) | 40 | 40 | 40 | 40 |
+| **Heard, p50 (ms)** | **525** | **355** | 509 | 355 |
+
+- **Decision:** keep WASAPI `auto_convert` (same latency as our resampler, 0 underflows, no Python CPU cost, better quality than linear interpolation). `StatefulResampler` stays as the fallback.
+- **The nudge** saves ~170 ms (all in TTFT). **C** is now the largest stage: ~130 ms of it is GPU contention → plan amendment #12.
+- **"Prefer maximum performance"** (NVIDIA Control Panel): idle TTFT after 10 / 20 s is 117 / 156 ms (was 169 / 155), and the GPU still drops to P8. No measurable effect; the nudge still works (43–45 ms).
+- **Open issue:** one LLM request today got no response headers for 10 s. The first-token timeout caught it. Ollama's log shows the request never reached a slot. Not reproduced in 18 follow-up tries, with or without `nvidia-smi` beforehand (≈ 1 in 70 requests today).

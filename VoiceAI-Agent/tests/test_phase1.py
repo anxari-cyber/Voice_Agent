@@ -6,7 +6,6 @@ from bench.latency_report import load, report
 from metrics.latency import LatencyLog
 from voice import audio_devices
 from voice.audio_devices import AudioDeviceError, resolve_device
-from voice.transcriber import _is_cuda_error
 
 HOST_APIS = (
     {"name": "MME", "default_input_device": 0, "default_output_device": 1},
@@ -60,6 +59,9 @@ def test_no_microphone_at_all_gives_clear_error(monkeypatch) -> None:
 
 
 def test_cuda_errors_are_recognised() -> None:
+    pytest.importorskip("faster_whisper")  # optional [whisper] extra
+    from voice.transcriber import _is_cuda_error
+
     assert _is_cuda_error(RuntimeError("CUDA failed with error out of memory"))
     assert _is_cuda_error(RuntimeError("Library cublas64_12.dll is not found"))
     assert not _is_cuda_error(RuntimeError("Invalid input shape"))

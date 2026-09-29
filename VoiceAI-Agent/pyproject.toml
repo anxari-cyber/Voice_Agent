@@ -8,28 +8,31 @@ version = "0.1.0"
 description = "Local voice-controlled software agent for Windows"
 requires-python = ">=3.10,<3.13"
 dependencies = [
-    "faster-whisper>=1.1.0",
-    "google-genai>=1.0.0",
     "httpx>=0.27.0",
-    "nvidia-cublas-cu12>=12.0",
-    "nvidia-cuda-runtime-cu12>=12.0",
-    "nvidia-cuda-nvrtc-cu12>=12.0",
-    "nvidia-cudnn-cu12>=9,<10",
     "numpy>=1.26.0",
     "pydantic-settings>=2.6.0",
     "sounddevice>=0.5.0",
-    # Parakeet STT. Uses onnxruntime-directml because the CUDA build of onnxruntime
-    # cannot run on RTX 50-series (Blackwell) GPUs. Only one onnxruntime package may be
-    # installed: if faster-whisper pulls in plain "onnxruntime", uninstall it afterwards.
+    # Parakeet STT + Silero VAD + Smart Turn. Uses onnxruntime-directml: the CUDA build of
+    # onnxruntime cannot run on RTX 50-series (Blackwell) GPUs. Only ONE onnxruntime package may
+    # be installed at a time (see README, "Install").
     "onnx-asr[hub]>=0.12.0",
     "onnxruntime-directml>=1.23.0",
-    # Kokoro TTS on the GPU. torch must be the CUDA 12.8 build (supports RTX 50-series):
+    # Kokoro TTS on the GPU. torch must be the CUDA 12.8 build, installed first (see README):
     #   uv pip install torch --index-url https://download.pytorch.org/whl/cu128
     "torch>=2.8",
     "kokoro>=0.9.4",
 ]
 
 [project.optional-dependencies]
+# Backup STT engine (VOICEAI_STT_ENGINE=whisper). faster-whisper depends on the plain
+# "onnxruntime" package; after installing this extra, reinstall onnxruntime-directml (README).
+whisper = [
+    "faster-whisper>=1.1.0",
+    "nvidia-cublas-cu12>=12.0",
+    "nvidia-cuda-runtime-cu12>=12.0",
+    "nvidia-cuda-nvrtc-cu12>=12.0",
+    "nvidia-cudnn-cu12>=9,<10",
+]
 dev = [
     "pytest>=8.0.0",
     "ruff>=0.9.0",
@@ -40,6 +43,9 @@ voiceai = "app.main:main"
 
 [tool.setuptools.packages.find]
 include = ["app*", "agent*", "config*", "metrics*", "models*", "progress*", "security*", "tools*", "voice*"]
+
+[tool.setuptools.package-data]
+voice = ["assets/*.onnx"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

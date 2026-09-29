@@ -3,16 +3,16 @@ from __future__ import annotations
 import argparse
 import time
 
-from agent.gemini_client import GeminiClient, GeminiError
+from agent.ollama_client import OllamaClient, OllamaError
 from config.settings import load_settings
 from metrics.latency import LatencyLog
 from voice.microphone import Microphone
-from voice.transcriber import Transcriber
+from voice.stt import STTEngine, create_engine
 
 
 def transcribe_command(
     microphone: Microphone,
-    transcriber: Transcriber,
+    transcriber: STTEngine,
     max_seconds: float = 15.0,
     silence_seconds: float = 0.7,
     speech_timeout: float = 10.0,
@@ -38,7 +38,7 @@ def transcribe_command(
     result = transcriber.transcribe(audio)
     if latency:
         latency.mark("stt_final")
-    print(f"Whisper finished in {time.perf_counter() - transcription_started_at:.1f}s")
+    print(f"{transcriber.name} finished in {time.perf_counter() - transcription_started_at:.2f}s")
     return result
 
 
@@ -54,12 +54,8 @@ def run(args: argparse.Namespace) -> None:
     latency = LatencyLog(settings.latency_log)
     microphone = Microphone(settings.mic_device)
     print(f"Microphone: {microphone.device.name} ({microphone.device.host_api})")
-    transcriber = Transcriber(
-        settings.stt_model,
-        device=settings.stt_device,
-        compute_type=settings.stt_compute_type,
-    )
-    print(f"Speak now... (Whisper device: {transcriber.device})")
+    transcriber = create_engine(settings.stt_engine)
+    print(f"Speak now... (STT: {transcriber.name})")
     print("Listening for speech...")
     latency.next_turn()
     transcription = transcribe_command(
@@ -76,19 +72,14 @@ def run(args: argparse.Namespace) -> None:
         print("No speech detected.")
         return
 
+    # Temporary bridge until the streaming pipeline (roadmap Step 1.5) replaces this file.
+    llm = OllamaClient(settings.llm_url, settings.llm_model, num_predict=settings.llm_max_tokens)
     try:
-        gemini = GeminiClient(
-            settings.gemini_api_key,
-            settings.model,
-            timeout_ms=settings.gemini_timeout_ms,
-        )
-        response_started_at = time.perf_counter()
-        response = gemini.generate(transcription)
+        response = llm.generate(transcription)
         latency.mark("llm_done")
-        print(f"Gemini finished in {time.perf_counter() - response_started_at:.1f}s")
-        print(f"{settings.model}: {response}")
-    except GeminiError as error:
-        print(f"Gemini is unavailable: {error}")
+        print(f"{settings.llm_model}: {response}")
+    except OllamaError as error:
+        print(f"Ollama is unavailable: {error}")
 
 
 def main() -> None:

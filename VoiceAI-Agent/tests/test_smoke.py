@@ -1,6 +1,6 @@
 import numpy as np
 
-from agent.gemini_client import GeminiClient, GeminiError
+from agent.ollama_client import OllamaClient
 from config.settings import Settings
 from voice.audio_devices import AudioDevice
 from voice.microphone import Microphone
@@ -9,44 +9,35 @@ from voice.microphone import Microphone
 def test_default_settings() -> None:
     settings = Settings(_env_file=None)
 
-    assert settings.model == "gemini-3.8-flash"
-    assert isinstance(settings.gemini_api_key, str)
+    assert settings.llm_model == "qwen3:4b-instruct-2507-q4_K_M"
+    assert settings.stt_engine == "parakeet"
+    assert settings.tts_engine == "kokoro"
     assert settings.project_root is None
     assert settings.mic_device is None
 
 
-def test_gemini_client_generates_visible_text(monkeypatch) -> None:
+def test_ollama_client_sends_request_and_returns_text(monkeypatch) -> None:
     captured = {}
 
     class FakeResponse:
-        text = "  Calculator ready.  "
+        def raise_for_status(self) -> None:
+            return None
 
-    class FakeModels:
-        def generate_content(self, **kwargs):
-            captured.update(kwargs)
-            return FakeResponse()
+        def json(self) -> dict:
+            return {"response": "  Calculator ready.  "}
 
-    class FakeClient:
-        models = FakeModels()
+    def fake_post(url, json, timeout):
+        captured.update(url=url, json=json)
+        return FakeResponse()
 
-    monkeypatch.setattr("agent.gemini_client.genai.Client", lambda **kwargs: FakeClient())
+    monkeypatch.setattr("agent.ollama_client.httpx.post", fake_post)
 
-    result = GeminiClient("test-key").generate("Create a calculator")
+    result = OllamaClient("http://127.0.0.1:11434/", "qwen3:4b").generate("Create a calculator")
 
     assert result == "Calculator ready."
-    assert captured["model"] == "gemini-3.8-flash"
-    assert captured["contents"] == "Create a calculator"
-    assert captured["config"].max_output_tokens == 128
-    assert captured["config"].thinking_config.thinking_level.value == "LOW"
-
-
-def test_gemini_client_requires_api_key() -> None:
-    try:
-        GeminiClient(" ")
-    except GeminiError as error:
-        assert "GEMINI_API_KEY" in str(error)
-    else:
-        raise AssertionError("Expected a missing API key error")
+    assert captured["url"] == "http://127.0.0.1:11434/api/generate"
+    assert captured["json"]["model"] == "qwen3:4b"
+    assert captured["json"]["prompt"] == "Create a calculator"
 
 
 def test_microphone_records_from_speech_until_silence(monkeypatch) -> None:

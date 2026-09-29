@@ -1,4 +1,7 @@
-"""Streaming voice activity detection with the Silero VAD v6 model bundled in faster-whisper.
+"""Streaming voice activity detection with the Silero VAD v6 model.
+
+The model file (voice/assets/silero_vad_v6.onnx) is the export shipped with faster-whisper
+(MIT), stored here so faster-whisper stays optional. See THIRD_PARTY_NOTICES.md.
 
 Feed it audio of any length (16 kHz mono float32). It splits the audio into the 512-sample
 windows Silero expects, keeps the model state between calls, and reports when speech starts
@@ -20,9 +23,7 @@ CONTEXT = 64  # samples of the previous window the model also sees
 
 
 def bundled_model_path() -> Path:
-    import faster_whisper
-
-    return Path(faster_whisper.__file__).parent / "assets" / "silero_vad_v6.onnx"
+    return Path(__file__).parent / "assets" / "silero_vad_v6.onnx"
 
 
 @dataclass(frozen=True)

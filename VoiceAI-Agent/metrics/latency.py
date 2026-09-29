@@ -111,13 +111,31 @@ class LatencyLog:
                     file.flush()
 
     def _format(self, item: tuple) -> str:
+        """Never raises: a bad record must not kill the writer thread (all later records
+        would be lost and flush() would hang until its timeout)."""
         turn, event, t, wall, extra = item
-        record = {
-            "run": self.run_id,
-            "turn": turn,
-            "event": event,
-            "t": round(t, 6),
-            "wall": datetime.fromtimestamp(wall).astimezone().isoformat(timespec="milliseconds"),
-            **extra,
-        }
-        return json.dumps(record) + "\n"
+        try:
+            record = {
+                "run": self.run_id,
+                "turn": turn,
+                "event": event,
+                "t": round(t, 6),
+                "wall": datetime.fromtimestamp(wall).astimezone().isoformat(timespec="milliseconds"),
+                **extra,
+            }
+            return json.dumps(record, default=_json_default) + "\n"
+        except Exception as error:  # noqa: BLE001 - keep the writer alive, keep the timing
+            fallback = {"run": self.run_id, "turn": turn, "event": event, "t": t,
+                        "format_error": repr(error)[:200]}
+            return json.dumps(fallback, default=str) + "\n"
+
+
+def _json_default(value: object) -> object:
+    """numpy scalars (np.float32, np.int64, ...) become plain numbers; anything else a string."""
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return item()
+        except (TypeError, ValueError):
+            pass
+    return str(value)

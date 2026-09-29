@@ -63,3 +63,38 @@ def test_new_step_1_1_events_are_known() -> None:
     for event in ("stt_partial", "turn_soft_end", "turn_commit", "turn_reopen",
                   "llm_cancel", "tts_cancel", "speculative_start"):
         assert event in EVENTS
+
+
+def test_numpy_and_unserialisable_extras_do_not_kill_the_writer(tmp_path) -> None:
+    import numpy as np
+
+    class Weird:
+        def __repr__(self) -> str:
+            return "<weird>"
+
+    log = LatencyLog(tmp_path / "l.jsonl")
+    log.mark("stt_final", prob=np.float32(0.5), count=np.int64(3), obj=Weird())
+    log.mark("stt_final", ok=1)
+    log.flush(timeout=2)
+
+    assert log._writer.is_alive()
+    first, second = read(tmp_path / "l.jsonl")
+    assert first["prob"] == 0.5 and isinstance(first["prob"], float)
+    assert first["count"] == 3
+    assert first["obj"] == "<weird>"
+    assert second["ok"] == 1
+    log.close()
+
+
+def test_a_record_that_cannot_be_formatted_becomes_an_error_line(tmp_path) -> None:
+    log = LatencyLog(tmp_path / "l.jsonl")
+    log.mark("stt_final", at=float("nan"), x={1, 2})  # set -> str via default
+    log._queue.put((1, "stt_final", 1.0, "not-a-timestamp", {}))  # breaks datetime
+    log.mark("speech_end", at=2.0)
+    log.flush(timeout=2)
+
+    records = read(tmp_path / "l.jsonl")
+    assert log._writer.is_alive()
+    assert [r["event"] for r in records] == ["stt_final", "stt_final", "speech_end"]
+    assert "format_error" in records[1]
+    log.close()

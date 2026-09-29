@@ -97,8 +97,11 @@ again. Press **Ctrl+C** to quit.
 
 - Pause for about 0.7 s when you've finished. That is how it knows your turn is over.
 - It can't interrupt-and-stop yet (roadmap Step 2.2): while it talks, it doesn't listen.
-- Choose other devices in `.env` (`VOICEAI_MIC_DEVICE`, `VOICEAI_SPEAKER_DEVICE`). To see them, run
-  `.venv\Scriptsoiceai --list-devices`.
+- **Devices are automatic.** The agent uses the Windows default mic and speaker (Settings →
+  System → Sound), checks that audio really flows, and switches by itself when you connect or
+  disconnect a headset (wired, USB or Bluetooth). To see what it would pick, run
+  `.venv\Scriptsoiceai --list-devices`. Forcing a device (`VOICEAI_MIC_DEVICE`,
+  `VOICEAI_SPEAKER_DEVICE` in `.env`) is optional.
 
 ## Tools
 

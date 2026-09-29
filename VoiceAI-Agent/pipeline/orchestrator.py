@@ -81,6 +81,9 @@ class AudioFrontEnd:
         self._thread: threading.Thread | None = None
 
     def start(self) -> None:
+        drain = getattr(self.source, "drain", None)
+        if drain:  # audio from before we started listening is stale (and has old timestamps)
+            drain()
         self._thread = threading.Thread(target=self._run, name="audio-frontend", daemon=True)
         self._thread.start()
 
@@ -91,6 +94,10 @@ class AudioFrontEnd:
 
     def pause_listening(self) -> None:
         self.listening.clear()
+
+    def reset_audio(self) -> None:
+        """The mic changed (hot-plug): drop any half-heard utterance, keep the listening state."""
+        self._reset.set()
 
     def resume_listening(self) -> None:
         """Listen again from now on; anything heard while paused (the agent's voice) is dropped."""

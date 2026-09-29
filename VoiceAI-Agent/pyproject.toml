@@ -22,6 +22,8 @@ dependencies = [
     "torch>=2.8",
     "kokoro>=0.9.4",
     "num2words>=0.5",  # WER text normalisation (metrics/wer.py)
+    # Ask Windows for the current default mic/speaker (automatic device selection, hot-plug)
+    "pycaw>=20240316; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

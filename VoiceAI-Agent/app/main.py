@@ -23,6 +23,7 @@ def run(args: argparse.Namespace) -> None:
     from pipeline.chunker import ClauseChunker
     from pipeline.orchestrator import AudioFrontEnd, Orchestrator
     from voice.audio_io import MicStream
+    from voice.device_manager import AudioManager
     from voice.gpu_warm import GpuWarmer
     from voice.playback import Player
     from voice.stt import streaming_from_settings
@@ -33,14 +34,13 @@ def run(args: argparse.Namespace) -> None:
     started = time.perf_counter()
     print("Starting the voice agent (everything runs locally)...")
 
-    mic = MicStream(device=settings.mic_device)
-    mic.start()  # fail fast, before loading models, if there is no usable mic
-    player = Player(sample_rate=24_000, device=settings.speaker_device)
-    player.start()
-    print(f"  Mic:     {mic.device.name.splitlines()[0]} ({mic.device.host_api})")
-    print(f"  Speaker: {player.device.name.splitlines()[0]} ({player.device.host_api})")
-    if mic.warning:
-        print(f"  Warning: {mic.warning}")
+    # Devices are chosen automatically (the Windows default, probed before use) and watched for
+    # hot-plug. With no mic yet, the agent still starts and picks one up when it's connected.
+    mic = MicStream()
+    player = Player(sample_rate=24_000)
+    audio = AudioManager(mic, player, mic_override=settings.mic_device,
+                         speaker_override=settings.speaker_device, log=lambda text: print(f"\n{text}"))
+    audio.start(monitor=False)
 
     builder = PromptBuilder.from_file(settings.system_prompt_file, settings.llm_num_ctx, settings.llm_max_tokens)
     llm = OllamaLLM(settings.llm_url, settings.llm_model, settings.llm_num_ctx, settings.llm_max_tokens)
@@ -63,19 +63,21 @@ def run(args: argparse.Namespace) -> None:
     print(f"  Loading the language model ({settings.llm_model})...")
     llm_thread.join()
     if llm_error:
-        mic.close()
-        player.close()
+        audio.stop()
         raise SystemExit(f"The language model is not available: {llm_error[0]}\n"
                          "Is Ollama running? Start it from the Start menu, then try again.")
 
     latency = LatencyLog(settings.latency_log)
     vad = SileroVAD(threshold=settings.vad_threshold, start_ms=settings.vad_start_ms,
                     end_ms=settings.vad_end_ms)
-    frontend = AudioFrontEnd(mic, vad, stt, pre_roll_ms=settings.pre_roll_ms,
+    frontend = AudioFrontEnd(audio, vad, stt, pre_roll_ms=settings.pre_roll_ms,
                              join_window_ms=settings.join_window_ms, latency=latency)
+    audio.on_mic_change = frontend.reset_audio
     orchestrator = Orchestrator(frontend, llm, builder, Memory(), tts, player, latency=latency,
                                 warmer=warmer, chunker_factory=ClauseChunker)
+    audio.start_monitor()
     print(f"\nReady in {time.perf_counter() - started:.0f} s. Speak whenever you like.")
+    print("Plugging in / unplugging a headset is fine: the agent switches automatically.")
     print("Press Ctrl+C to quit.")
     try:
         asyncio.run(orchestrator.run())
@@ -83,8 +85,7 @@ def run(args: argparse.Namespace) -> None:
         pass
     finally:
         orchestrator.close()
-        mic.close()
-        player.close()
+        audio.stop()
         latency.close()
         print(f"\nBye. {len(orchestrator.turns)} turns. Audio underflows: {player.underflows}, "
               f"gaps: {player.starved_blocks}. Latency log: {settings.latency_log}")
@@ -100,7 +101,9 @@ def main() -> None:
     args = parser.parse_args()
 
     if args.list_devices:
-        print(format_devices(list_devices()))
+        from voice.windows_audio import default_device_names
+
+        print(format_devices(list_devices(), default_device_names()))
     elif args.command == "run":
         try:
             run(args)

@@ -340,3 +340,10 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 | 1.2 | Cancel after 5 tokens → GPU | idle | ✅ control 96% busy → **6% mean** 0.2–1.5 s after cancel. Ollama log `stop: cancel task` |
 | 1.2 | New request right after a cancel (`OLLAMA_NUM_PARALLEL=1`) | not delayed | ✅ TTFT 52 ms vs 56 ms normal |
 | 1.2 | Warm-up with the real options (stops after the first token) | — | 223 ms with the model already loaded |
+| 1.2 fix | Overlapping streams, only the first cancelled | independent | ✅ per-request `OllamaStream` handles. The second stream finishes all 50 tokens |
+| 1.2 fix | Self-calibrating token estimate (`prompt_eval_count`) | never under-counts | ✅ estimate/real went 1.70 → 1.11 over 30 turns (min 1.09). Learned 3.9 chars/token, capped at 4.0 |
+| 1.2 fix | First-token timeout | ~10 s | ✅ 10 s (httpx read timeout per request). Warm-up gets 120 s for cold loads from the HDD |
+| 1.2 exp | `OLLAMA_FLASH_ATTENTION=1` (clean restart, 100% GPU) | improve? | ❌ no change: TTFT 63 ms, 94 tok/s. **Not kept** |
+| 1.2 exp | Flash attention + `OLLAMA_KV_CACHE_TYPE=q8_0` | improve? | ❌ 62 ms, **90 tok/s** (−4%), −250 MB VRAM. **Not kept** (option if VRAM gets tight later) |
+
+- **Lesson:** stopping `ollama.exe` leaves its `llama-server.exe` runners alive and holding VRAM. The next runner then lands 66% on the CPU (16 tok/s). Always stop `llama-server` too when restarting Ollama.

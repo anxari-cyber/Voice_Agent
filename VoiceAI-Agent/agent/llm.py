@@ -1,18 +1,22 @@
 """Streaming LLM client for the Voice Brain (Ollama /api/chat).
 
 Latency rules this client follows (roadmap Step 1.2):
-- One persistent HTTP connection (httpx.Client), created once.
+- One persistent HTTP connection pool (httpx.Client), created once.
 - `options` (num_ctx, num_predict, temperature) are built once and sent unchanged on every
   request, including the warm-up. A different num_ctx makes Ollama reload the model.
 - `think: false`, `keep_alive: -1` (the model stays in VRAM).
-- `stream()` yields Deltas as tokens arrive; `cancel()` closes the stream from any thread.
+- `stream()` returns an `LLMStream`: iterate it for Deltas, call its own `cancel()` to stop it.
+  Each request has its own handle, so cancelling one never affects another (overlapping
+  streams happen with speculative starts and barge-in).
+- A request that produces nothing for `first_token_timeout` seconds fails fast instead of
+  hanging the conversation. The warm-up gets a long timeout because it may load the model.
 """
 
 from __future__ import annotations
 
 import json
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
@@ -40,10 +44,81 @@ class Delta:
     stats: dict = field(default_factory=dict)
 
 
-class LLM(Protocol):
-    def stream(self, messages: Sequence[dict], tools: Sequence[dict] | None = None) -> Iterator[Delta]: ...
+class LLMStream(Protocol):
+    def __iter__(self) -> Iterator[Delta]: ...
 
     def cancel(self) -> None: ...
+
+
+class LLM(Protocol):
+    def stream(self, messages: Sequence[dict], tools: Sequence[dict] | None = None) -> LLMStream: ...
+
+    def cancel(self) -> None: ...
+
+
+class OllamaStream:
+    """One streamed request. Iterate it once; `cancel()` works from any thread, any time."""
+
+    def __init__(self, client: httpx.Client, payload: dict, timeout: float,
+                 on_finish: Callable[[OllamaStream], None] = lambda stream: None) -> None:
+        self._client = client
+        self._payload = payload
+        self._timeout = timeout
+        self._on_finish = on_finish
+        self._lock = threading.Lock()
+        self._response: httpx.Response | None = None
+        self._cancelled = threading.Event()
+        self.stats: dict = {}
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled.is_set()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+        with self._lock:
+            response = self._response
+        if response is not None:
+            response.close()  # closing the connection makes Ollama stop generating
+
+    def __iter__(self) -> Iterator[Delta]:
+        try:
+            if self._cancelled.is_set():
+                return
+            timeout = httpx.Timeout(connect=3.0, read=self._timeout, write=10.0, pool=5.0)
+            with self._client.stream("POST", "/api/chat", json=self._payload, timeout=timeout) as response:
+                if response.status_code != 200:
+                    response.read()
+                    raise LLMError(f"Ollama returned {response.status_code}: {response.text[:300]}")
+                with self._lock:
+                    self._response = response
+                if self._cancelled.is_set():  # cancelled while the request was being sent
+                    return
+                for line in response.iter_lines():
+                    if self._cancelled.is_set():
+                        return
+                    if not line:
+                        continue
+                    delta = _parse(line)
+                    if delta.done:
+                        self.stats = delta.stats
+                    yield delta
+                    if delta.done:
+                        return
+        except httpx.ReadTimeout as error:
+            raise LLMError(f"Ollama sent nothing for {self._timeout:.0f} s") from error
+        except (httpx.ReadError, httpx.RemoteProtocolError, httpx.StreamClosed):
+            if self._cancelled.is_set():
+                return  # cancel() closed the socket under us
+            raise
+        except httpx.HTTPError as error:
+            if self._cancelled.is_set():
+                return
+            raise LLMError(f"Ollama request failed: {error}") from error
+        finally:
+            with self._lock:
+                self._response = None
+            self._on_finish(self)
 
 
 class OllamaLLM:
@@ -54,18 +129,17 @@ class OllamaLLM:
         num_ctx: int = 4096,
         max_tokens: int = 200,
         temperature: float = 0.6,
+        first_token_timeout: float = 10.0,
+        warm_up_timeout: float = 120.0,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.model = model
         self.options = {"num_ctx": num_ctx, "num_predict": max_tokens, "temperature": temperature}
-        self._client = httpx.Client(
-            base_url=url.rstrip("/"),
-            timeout=httpx.Timeout(connect=3.0, read=60.0, write=10.0, pool=5.0),
-            transport=transport,
-        )
-        self._lock = threading.Lock()
-        self._response: httpx.Response | None = None
-        self._cancelled = threading.Event()
+        self.first_token_timeout = first_token_timeout
+        self.warm_up_timeout = warm_up_timeout
+        self._client = httpx.Client(base_url=url.rstrip("/"), transport=transport)
+        self._active: set[OllamaStream] = set()
+        self._active_lock = threading.Lock()
 
     def payload(self, messages: Sequence[dict], tools: Sequence[dict] | None = None) -> dict:
         body = {
@@ -80,58 +154,40 @@ class OllamaLLM:
             body["tools"] = list(tools)
         return body
 
-    def stream(self, messages: Sequence[dict], tools: Sequence[dict] | None = None) -> Iterator[Delta]:
-        self._cancelled.clear()
-        try:
-            with self._client.stream("POST", "/api/chat", json=self.payload(messages, tools)) as response:
-                if response.status_code != 200:
-                    response.read()
-                    raise LLMError(f"Ollama returned {response.status_code}: {response.text[:300]}")
-                with self._lock:
-                    self._response = response
-                for line in response.iter_lines():
-                    if self._cancelled.is_set():
-                        return
-                    if not line:
-                        continue
-                    delta = _parse(line)
-                    yield delta
-                    if delta.done:
-                        return
-        except (httpx.ReadError, httpx.RemoteProtocolError, httpx.StreamClosed):
-            if self._cancelled.is_set():
-                return  # cancel() closed the socket under us
-            raise
-        except httpx.HTTPError as error:
-            raise LLMError(f"Ollama request failed: {error}") from error
-        finally:
-            with self._lock:
-                self._response = None
+    def stream(self, messages: Sequence[dict], tools: Sequence[dict] | None = None,
+               timeout: float | None = None) -> OllamaStream:
+        stream = OllamaStream(self._client, self.payload(messages, tools),
+                              timeout or self.first_token_timeout, on_finish=self._forget)
+        with self._active_lock:
+            self._active.add(stream)
+        return stream
 
     def cancel(self) -> None:
-        """Stop the current stream. Safe to call from another thread, or when idle."""
-        self._cancelled.set()
-        with self._lock:
-            response = self._response
-        if response is not None:
-            response.close()  # closing the connection makes Ollama stop generating
+        """Cancel every stream that is still running (e.g. at shutdown)."""
+        with self._active_lock:
+            streams = list(self._active)
+        for stream in streams:
+            stream.cancel()
 
-    def warm_up(self, messages: Sequence[dict]) -> dict:
+    def warm_up(self, messages: Sequence[dict]) -> None:
         """Load the model and cache the prompt prefix, using exactly the real options.
 
-        Stops after the first token instead of changing num_predict, so the warm-up request
-        is identical to a real one.
+        Stops after the first token instead of changing num_predict, so the warm-up request is
+        identical to a real one. Uses the long timeout: a cold load from disk can take 30 s.
         """
-        for delta in self.stream(messages):
+        stream = self.stream(messages, timeout=self.warm_up_timeout)
+        for delta in stream:
             if delta.content or delta.done:
-                stats = delta.stats
-                self.cancel()
-                return stats
-        return {}
+                stream.cancel()
+                return
 
     def close(self) -> None:
         self.cancel()
         self._client.close()
+
+    def _forget(self, stream: OllamaStream) -> None:
+        with self._active_lock:
+            self._active.discard(stream)
 
 
 def _parse(line: str) -> Delta:

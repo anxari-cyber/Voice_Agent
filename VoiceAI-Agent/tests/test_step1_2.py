@@ -186,3 +186,122 @@ def test_truncate_last_assistant_keeps_only_what_was_heard() -> None:
 
     memory.truncate_last_assistant("")  # nothing heard -> the answer disappears
     assert memory.messages(10_000) == [{"role": "user", "content": "list three bugs"}]
+
+
+# ---- Step 1.2 fixes -------------------------------------------------------------------------
+
+def slow_stream(tag: str, n: int = 50):
+    for i in range(n):
+        yield chunk(f"{tag}{i} ")
+        time.sleep(0.002)
+    yield chunk(done=True, eval_count=n)
+
+
+def test_two_overlapping_streams_cancel_only_the_first() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        tag = json.loads(request.content)["messages"][0]["content"]
+        return httpx.Response(200, content=slow_stream(tag))
+
+    llm = llm_with(handler)
+    first = llm.stream([{"role": "user", "content": "A"}])
+    second = llm.stream([{"role": "user", "content": "B"}])
+    first_iter, second_iter = iter(first), iter(second)
+    got_a = [next(first_iter).content for _ in range(3)]
+    got_b = [next(second_iter).content for _ in range(3)]
+
+    first.cancel()
+    rest_a = list(first_iter)
+    rest_b = list(second_iter)
+
+    assert got_a == ["A0 ", "A1 ", "A2 "] and got_b == ["B0 ", "B1 ", "B2 "]
+    assert rest_a == [] and first.cancelled
+    assert not second.cancelled
+    assert rest_b[-1].done and len(rest_b) == 48  # B3..B49 + done: untouched by A's cancel
+    assert second.stats["eval_count"] == 50
+
+
+def test_cancel_before_iterating_sends_no_request() -> None:
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(request)
+        return httpx.Response(200, content=chunk(done=True))
+
+    stream = llm_with(handler).stream([])
+    stream.cancel()
+    assert list(stream) == []
+    assert calls == []
+
+
+def test_no_first_token_within_timeout_raises_quickly() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("no data", request=request)
+
+    llm = OllamaLLM(url="http://ollama.test", model="m", first_token_timeout=10.0,
+                    transport=httpx.MockTransport(handler))
+    with pytest.raises(LLMError, match="sent nothing for 10 s"):
+        list(llm.stream([]))
+
+
+def test_warm_up_uses_the_long_timeout_and_real_timeout_is_short() -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions["timeout"]["read"])
+        return httpx.Response(200, content=chunk("x") + chunk(done=True))
+
+    llm = OllamaLLM(url="http://ollama.test", model="m", first_token_timeout=10.0,
+                    warm_up_timeout=120.0, transport=httpx.MockTransport(handler))
+    llm.warm_up([{"role": "user", "content": "hi"}])
+    list(llm.stream([{"role": "user", "content": "hi"}]))
+    assert seen == [120.0, 10.0]
+
+
+def test_token_estimator_calibrates_but_never_under_counts() -> None:
+    from agent.memory import MAX_CHARS_PER_TOKEN, TokenEstimator
+
+    estimator = TokenEstimator()
+    messages = [{"role": "user", "content": "word " * 400}]  # 2000 chars
+    for _ in range(10):  # Ollama says ~4.2 chars per token
+        estimator.calibrate(messages, prompt_eval_count=int(2000 / 4.2) + 5)
+    assert 3.0 < estimator.chars_per_token <= MAX_CHARS_PER_TOKEN
+    assert estimator.tokens("x" * 4000) >= 4000 / 4.2  # still above the real count
+
+    crazy = TokenEstimator()
+    crazy.calibrate(messages, prompt_eval_count=10)  # absurd: 200 chars per token
+    assert crazy.chars_per_token == MAX_CHARS_PER_TOKEN  # safe floor holds
+
+    tiny = TokenEstimator()
+    tiny.calibrate([{"role": "user", "content": "hi"}], prompt_eval_count=500)
+    assert tiny.samples == 0  # too little text to learn from
+
+
+def test_builder_calibration_skips_requests_with_tools() -> None:
+    from agent.memory import TokenEstimator
+
+    estimator = TokenEstimator()
+    builder = PromptBuilder("Be brief.", num_ctx=4096, max_tokens=200, estimator=estimator)
+    messages = [{"role": "user", "content": "hello there " * 50}]
+    builder.calibrate(messages, {"prompt_eval_count": 150}, used_tools=True)
+    assert estimator.samples == 0
+    builder.calibrate(messages, {"prompt_eval_count": 150})
+    assert estimator.samples == 1
+
+
+def test_consecutive_user_turns_are_merged() -> None:
+    memory = Memory()
+    memory.add_user("open the")
+    memory.add_assistant("Sure, opening")
+    memory.truncate_last_assistant("")  # the answer was never heard
+    memory.add_user("project folder")
+    assert memory.messages(10_000) == [{"role": "user", "content": "open the project folder"}]
+
+    builder = PromptBuilder("Be brief.", num_ctx=4096, max_tokens=200)
+    messages = builder.build(memory, "and run the tests")
+    assert [m["role"] for m in messages] == ["system", "user"]
+    assert messages[-1]["content"] == "open the project folder and run the tests"
+
+
+def test_system_prompt_mentions_speech_recognition_errors() -> None:
+    text = PromptBuilder.from_file("config/system_prompt.md", 4096, 200).system_message["content"]
+    assert "speech recognition" in text and "mistakes" in text

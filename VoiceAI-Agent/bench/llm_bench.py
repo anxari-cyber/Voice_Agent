@@ -25,7 +25,7 @@ import httpx
 import numpy as np
 
 from agent.llm import OllamaLLM
-from agent.memory import Memory, estimate_tokens
+from agent.memory import Memory
 from agent.prompt import PromptBuilder
 from config.settings import load_settings
 
@@ -106,10 +106,12 @@ def stream_for(llm: OllamaLLM, messages: list[dict], seconds: float | None = Non
     """Stream until `seconds` pass or `tokens` content chunks arrive; return the stop time."""
     started = time.perf_counter()
     count = 0
-    for delta in llm.stream(messages):
+    stream = llm.stream(messages)
+    for delta in stream:
         count += bool(delta.content)
         if (tokens and count >= tokens) or (seconds and time.perf_counter() - started >= seconds):
             break
+    stream.cancel()  # cancel this request only
     return time.perf_counter()
 
 
@@ -119,7 +121,6 @@ def cancel_test(llm: OllamaLLM, builder: PromptBuilder, gpu: GpuSampler, baselin
     # Control: the sampler must be able to SEE a busy GPU, otherwise "idle" proves nothing.
     control_start = time.perf_counter()
     control_end = stream_for(llm, messages, seconds=1.5)
-    llm.cancel()
     busy = gpu.between(control_start + 0.4, control_end)
     time.sleep(1.5)
 
@@ -127,9 +128,14 @@ def cancel_test(llm: OllamaLLM, builder: PromptBuilder, gpu: GpuSampler, baselin
     # the rest of the reply (~2 s of work at ~100 tok/s), the GPU would be busy in this window.
     log_path = ollama_log()
     log_size = log_path.stat().st_size if log_path.exists() else 0
-    stream_for(llm, messages, tokens=5)
+    stream = llm.stream(messages)
+    count = 0
+    for delta in stream:
+        count += bool(delta.content)
+        if count >= 5:
+            break
     cancel_at = time.perf_counter()
-    llm.cancel()
+    stream.cancel()
     cancel_call_ms = (time.perf_counter() - cancel_at) * 1000
     time.sleep(1.6)
     idle = gpu.between(cancel_at + 0.2, cancel_at + 1.5)
@@ -137,7 +143,6 @@ def cancel_test(llm: OllamaLLM, builder: PromptBuilder, gpu: GpuSampler, baselin
     # A new request right after a cancel: with OLLAMA_NUM_PARALLEL=1 it would queue behind a
     # still-running generation, so a normal TTFT shows the old one really stopped.
     stream_for(llm, messages, tokens=5)
-    llm.cancel()
     immediate = run_turn(llm, builder.build(Memory(), "Say OK."))
 
     log_text = ""
@@ -175,8 +180,9 @@ def main() -> None:
     for prompt in PROMPTS[: args.prompts]:
         messages = builder.build(memory, prompt)
         result = run_turn(llm, messages)
-        estimated = sum(estimate_tokens(m["content"]) for m in messages)
+        estimated = builder.estimator.messages_tokens(messages)
         result["estimate_ratio"] = estimated / max(1, result["stats"].get("prompt_eval_count", 1))
+        builder.calibrate(messages, result["stats"])
         results.append(result)
         memory.add_user(prompt)
         memory.add_assistant(result["text"])
@@ -192,8 +198,9 @@ def main() -> None:
     print(f"Generation speed: p50 {np.percentile(speeds, 50):.0f} tok/s, min {speeds.min():.0f}   (target > 60)")
     print(f"Prompt cache: {sum(c > 0 for c in cached)}/{len(cached)} turns reused a cached prefix; "
           f"last turn {cached[-1]}/{prompt_tokens[-1]} prompt tokens cached")
-    print(f"Token estimate / real prompt_eval_count: min {ratios.min():.2f}, p50 {np.median(ratios):.2f} "
-          f"(>= 1.0 means the estimate is safely conservative)")
+    print(f"Token estimate / real prompt_eval_count: first {ratios[0]:.2f}, last {ratios[-1]:.2f}, "
+          f"min {ratios.min():.2f} (>= 1.0 = never under-counts); "
+          f"learned {builder.estimator.chars_per_token:.2f} chars/token after {builder.estimator.samples} samples")
     print(f"Sample answer: {results[3]['text'][:120]!r}")
 
     ok, sample = check_think_false(settings, builder)

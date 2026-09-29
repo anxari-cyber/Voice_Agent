@@ -254,7 +254,7 @@ def test_warm_up_uses_the_long_timeout_and_real_timeout_is_short() -> None:
                     warm_up_timeout=120.0, transport=httpx.MockTransport(handler))
     llm.warm_up([{"role": "user", "content": "hi"}])
     list(llm.stream([{"role": "user", "content": "hi"}]))
-    assert seen == [120.0, 10.0]
+    assert seen == [120.0, 2.0]  # warm-up: long; real request: 2 s header timeout first
 
 
 def test_token_estimator_calibrates_but_never_under_counts() -> None:
@@ -305,3 +305,38 @@ def test_consecutive_user_turns_are_merged() -> None:
 def test_system_prompt_mentions_speech_recognition_errors() -> None:
     text = PromptBuilder.from_file("config/system_prompt.md", 4096, 200).system_message["content"]
     assert "speech recognition" in text and "mistakes" in text
+
+
+
+def test_stuck_request_is_retried_once_with_the_normal_timeout() -> None:
+    seen = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.extensions["timeout"]["read"])
+        if len(seen) == 1:
+            raise httpx.ReadTimeout("no headers", request=request)
+        return httpx.Response(200, content=chunk("Hi") + chunk(done=True))
+
+    stream = OllamaLLM(url="http://ollama.test", model="m", transport=httpx.MockTransport(handler)).stream([])
+    assert "".join(d.content for d in stream) == "Hi"
+    assert seen == [2.0, 10.0]
+    assert stream.retries == 1
+
+
+def test_stall_after_content_is_an_error_not_a_retry() -> None:
+    calls = []
+
+    def body():
+        yield chunk("Hel")
+        raise httpx.ReadTimeout("stalled")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        return httpx.Response(200, content=body())
+
+    stream = OllamaLLM(url="http://ollama.test", model="m", transport=httpx.MockTransport(handler)).stream([])
+    received = []
+    with pytest.raises(LLMError, match="sent nothing for 2 s"):
+        for delta in stream:
+            received.append(delta.content)
+    assert received == ["Hel"] and len(calls) == 1

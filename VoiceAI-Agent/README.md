@@ -1,8 +1,8 @@
 # VoiceAI-Agent
 
 A local, low-latency voice agent for Windows. Everything runs on your own PC with open-source
-models: no cloud APIs and no API keys, and it works offline after setup. You can interrupt it
-while it talks.
+models: no cloud APIs and no API keys, and it works offline after setup. Interrupting it while
+it talks is planned (roadmap Step 2.2).
 
 - **Plan:** [../plan_v3_roadmap.md](../plan_v3_roadmap.md)
 - **Measured results so far:** [../implementation.md](../implementation.md)
@@ -10,9 +10,9 @@ while it talks.
 ## How it works
 
 ```
-Mic (always on) → Silero VAD → Parakeet STT (live) → Qwen3-4B via Ollama (streaming)
-      ↑                                                      ↓
-      └──── barge-in stops playback ←── Speaker ←── Kokoro TTS (per clause)
+Mic → Silero VAD → Parakeet STT (live) → join window → Qwen3-4B via Ollama (streaming)
+                                                              ↓
+            Speaker ← Kokoro TTS (per clause) ← clause chunker
 ```
 
 | Part | Model | Runs on | Measured |
@@ -83,19 +83,33 @@ Useful ones:
 quality, which causes wrong words. Headphones also stop the agent from hearing, and
 interrupting, its own voice.
 
-## Run
+## Talk to the agent
+
+From the `Voice_agent` folder (one level up), run:
+
+```powershell
+.	alk
+```
+
+Or double-click `talk.cmd`. The first start takes a while: it loads the models and warms them up.
+When it says **Ready**, just speak. The agent answers out loud, and after each answer it listens
+again. Press **Ctrl+C** to quit.
+
+- Pause for about 0.7 s when you've finished. That is how it knows your turn is over.
+- It can't interrupt-and-stop yet (roadmap Step 2.2): while it talks, it doesn't listen.
+- Choose other devices in `.env` (`VOICEAI_MIC_DEVICE`, `VOICEAI_SPEAKER_DEVICE`). To see them, run
+  `.venv\Scriptsoiceai --list-devices`.
+
+## Tools
 
 ```powershell
 python -m app.main --list-devices     # show microphones and speakers
-python -m bench.live_stt              # live speech-to-text: speak and watch the words appear
-python -m bench.bargein_demo          # the agent talks; start speaking and it stops
-python -m bench.kokoro_gpu_bench      # TTS speed, GPU vs CPU
+python -m bench.live_stt              # live speech-to-text only
+python -m bench.conversation_test     # the whole pipeline fed by recorded speech (no mic needed)
+python -m bench.record_commands --label wired   # record your 30 commands for the WER test
+python -m bench.stt_bench wired       # WER on your recordings
 python -m bench.latency_report        # p50 / p95 per stage from logs/latency.jsonl
-voiceai run                           # one voice question, answered by the local LLM (text for now)
 ```
-
-`voiceai run` is a temporary bridge. The full streaming conversation loop (talk → answer out
-loud → interrupt) is roadmap Step 1.5.
 
 ## Development
 

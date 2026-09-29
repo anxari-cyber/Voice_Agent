@@ -8,8 +8,10 @@ Latency rules this client follows (roadmap Step 1.2):
 - `stream()` returns an `LLMStream`: iterate it for Deltas, call its own `cancel()` to stop it.
   Each request has its own handle, so cancelling one never affects another (overlapping
   streams happen with speculative starts and barge-in).
-- A request that produces nothing for `first_token_timeout` seconds fails fast instead of
-  hanging the conversation. The warm-up gets a long timeout because it may load the model.
+- A request with no first chunk after `header_timeout` (2 s) is retried once with
+  `first_token_timeout` (10 s): one request got stuck without headers for 10 s in testing.
+  A stream that stalls after content arrived is an error (no retry: the user heard part of it).
+  The warm-up gets a long timeout because it may load the model.
 """
 
 from __future__ import annotations
@@ -60,10 +62,16 @@ class OllamaStream:
     """One streamed request. Iterate it once; `cancel()` works from any thread, any time."""
 
     def __init__(self, client: httpx.Client, payload: dict, timeout: float,
-                 on_finish: Callable[[OllamaStream], None] = lambda stream: None) -> None:
+                 on_finish: Callable[[OllamaStream], None] = lambda stream: None,
+                 header_timeout: float | None = None) -> None:
         self._client = client
         self._payload = payload
         self._timeout = timeout
+        # First attempt uses the short header timeout; if NOTHING arrived, retry once with
+        # the normal timeout. Ollama sends headers together with the first chunk (measured:
+        # 140 ms even for ~2,400 uncached prompt tokens), so 2 s only trips on a stuck request.
+        self._attempts = [header_timeout, timeout] if header_timeout and header_timeout < timeout else [timeout]
+        self.retries = 0
         self._on_finish = on_finish
         self._lock = threading.Lock()
         self._response: httpx.Response | None = None
@@ -83,9 +91,27 @@ class OllamaStream:
 
     def __iter__(self) -> Iterator[Delta]:
         try:
-            if self._cancelled.is_set():
-                return
-            timeout = httpx.Timeout(connect=3.0, read=self._timeout, write=10.0, pool=5.0)
+            for attempt, read_timeout in enumerate(self._attempts):
+                if self._cancelled.is_set():
+                    return
+                received = False
+                try:
+                    for delta in self._request(read_timeout):
+                        received = True
+                        yield delta
+                    return
+                except httpx.ReadTimeout as error:
+                    if received or attempt == len(self._attempts) - 1:
+                        raise LLMError(f"Ollama sent nothing for {read_timeout:.0f} s") from error
+                    self.retries += 1  # stuck before the first chunk: try once more
+        finally:
+            with self._lock:
+                self._response = None
+            self._on_finish(self)
+
+    def _request(self, read_timeout: float) -> Iterator[Delta]:
+        timeout = httpx.Timeout(connect=3.0, read=read_timeout, write=10.0, pool=5.0)
+        try:
             with self._client.stream("POST", "/api/chat", json=self._payload, timeout=timeout) as response:
                 if response.status_code != 200:
                     response.read()
@@ -105,8 +131,8 @@ class OllamaStream:
                     yield delta
                     if delta.done:
                         return
-        except httpx.ReadTimeout as error:
-            raise LLMError(f"Ollama sent nothing for {self._timeout:.0f} s") from error
+        except httpx.ReadTimeout:
+            raise
         except (httpx.ReadError, httpx.RemoteProtocolError, httpx.StreamClosed):
             if self._cancelled.is_set():
                 return  # cancel() closed the socket under us
@@ -118,7 +144,6 @@ class OllamaStream:
         finally:
             with self._lock:
                 self._response = None
-            self._on_finish(self)
 
 
 class OllamaLLM:
@@ -131,12 +156,14 @@ class OllamaLLM:
         temperature: float = 0.6,
         first_token_timeout: float = 10.0,
         warm_up_timeout: float = 120.0,
+        header_timeout: float = 2.0,
         transport: httpx.BaseTransport | None = None,
     ) -> None:
         self.model = model
         self.options = {"num_ctx": num_ctx, "num_predict": max_tokens, "temperature": temperature}
         self.first_token_timeout = first_token_timeout
         self.warm_up_timeout = warm_up_timeout
+        self.header_timeout = header_timeout
         self._client = httpx.Client(base_url=url.rstrip("/"), transport=transport)
         self._active: set[OllamaStream] = set()
         self._active_lock = threading.Lock()
@@ -156,8 +183,10 @@ class OllamaLLM:
 
     def stream(self, messages: Sequence[dict], tools: Sequence[dict] | None = None,
                timeout: float | None = None) -> OllamaStream:
+        long_wait = timeout is not None  # warm-up: may load the model, no short first attempt
         stream = OllamaStream(self._client, self.payload(messages, tools),
-                              timeout or self.first_token_timeout, on_finish=self._forget)
+                              timeout or self.first_token_timeout, on_finish=self._forget,
+                              header_timeout=None if long_wait else self.header_timeout)
         with self._active_lock:
             self._active.add(stream)
         return stream

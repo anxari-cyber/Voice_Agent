@@ -396,3 +396,25 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 3. Spelling changes between decodes ("Arrest" / "AREST") → **fuzzy anchor matching** (≥ 0.75 similarity).
 4. A wrong word confirmed at the end of the audio ("3.5" for "three point four") → confirm a word only once the **next word has started ≥ 0.3 s before the end**.
 5. "settings .py" → **`join_words()`** attaches punctuation-led tokens, like the decoder's own text.
+
+### Step 1.5 results (end-to-end conversation loop)
+
+Scripted conversation (`bench/conversation_test.py`): the real pipeline (VAD, Parakeet, Qwen3-4B, Kokoro, real speaker at gain 0), with a file "mic" speaking the 30 synthetic commands in real time. "heard" = real end of speech → first audio block at the sound card (the WASAPI output latency, ~40 ms, comes on top). The turn commits after the 700 ms join window (speculation comes in Step 1.6).
+
+| Run | Turns | heard p50 / p95 | STT final* | join wait | LLM 1st token | TTS 1st audio | underflows / gaps |
+|---|---|---|---|---|---|---|---|
+| Baseline (first clause ≤ 6 words, nudge at speech start) | 10 | 1069 / 1287 | 284 | 426 | 51 | 288 | 0 / 0 |
+| #12: first clause ≤ 3 words | 10 | 1069 / 1219 | 282 | 424 | 99 | **253** | 0 / 0 |
+| #12: nudge off | 10 | **1239** / 1320 | 288 | 425 | **228** | 307 | 0 / 0 |
+| **L8 GIL check: 10.5 minutes non-stop** | 32 | 1185 / 1313 | 272 | 438 | 169 | 308 | **0 / 0** |
+| **Final: nudge at speech start + end** | 20 | **1068 / 1115** | 267 | 441 | **49** (p95 64) | 302 | 0 / 0 |
+
+\* "STT final" includes the VAD's 200 ms end-of-speech wait.
+
+- **Nudge:** worth ~170 ms in the real turn (LLM first token 228 → 51 ms). One kick at speech start cooled down again before long commands (nudge → LLM request ≥ 3.2 s: TTFT 208–225 ms), so it now also kicks at speech end: p50 49 / p95 64 ms.
+- **First clause ≤ 3 words:** TTS first audio −35 ms, no change in the total. Kept at 6 until the user has listened (choppiness).
+- **Kokoro fp16:** `.half()` fails (Kokoro creates fp32 tensors internally). Under autocast it's the same speed or slower (53 vs 45 ms "Okay."; 73 vs 73 ms long); correlation with fp32 is 0.96–0.99. **Not adopted.**
+- **Hardware-accelerated GPU scheduling:** `HwSchMode` not set = Windows 11 default (normally on). Comparing on vs off needs a reboot: left to the user.
+- **CUDA graphs / torch.compile:** not tried. Kokoro's inputs change length every clause, and `torch.compile` needs Triton, which has no official Windows build. Stays optional R&D.
+- **The LLM header timeout (2 s) + one retry** is in place. No stall happened in these 72 turns.
+- **Bug found by this test:** VAD positions restart at every resume, but the stream counter didn't, so speech-end times drifted by the whole answer length from turn 2 on (e.g. "STT 14 s"). Fixed (count in VAD coordinates), with a regression test.

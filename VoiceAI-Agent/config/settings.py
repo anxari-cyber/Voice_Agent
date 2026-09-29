@@ -1,6 +1,11 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# The VoiceAI-Agent folder. Relative paths in settings are resolved against it, so the agent
+# works no matter which folder it is started from.
+PROJECT_DIR = Path(__file__).resolve().parents[1]
 
 
 class Settings(BaseSettings):
@@ -47,7 +52,13 @@ class Settings(BaseSettings):
 
     latency_log: Path = Path("logs/latency.jsonl")
 
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="VOICEAI_", extra="ignore")
+    model_config = SettingsConfigDict(env_file=PROJECT_DIR / ".env", env_prefix="VOICEAI_", extra="ignore")
+
+    @field_validator("models_dir", "system_prompt_file", "latency_log")
+    @classmethod
+    def _relative_to_project(cls, value: Path) -> Path:
+        value = Path(value)
+        return value if value.is_absolute() else PROJECT_DIR / value
 
 
 def load_settings() -> Settings:

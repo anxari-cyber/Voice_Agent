@@ -331,3 +331,12 @@ Each phase has a **Done when** check. We do not start the next phase until it pa
 | 0 | LLM cold load from D: (HDD) | — | 30.2 s (was 9.4 s from the C: SSD). Startup only; warm 119 tok/s |
 | 1.1 | `LatencyLog.mark()` p50 | < 50 µs | ✅ **0.4 µs** (was 137 µs) |
 | 1.1 | `mark()` worst call over 20k calls | — | ~300 µs (was 118,689 µs: a file-write stall on the hot path) |
+| 1.1 fix | Writer thread survives a bad record (`np.float32`, custom objects, a broken timestamp) | — | ✅ numpy scalars → numbers, anything else → str, an unformattable record → `format_error` line |
+| 1.2 | LLM warm TTFT (first **non-empty** chunk), 30 turns with growing history | < 150 ms | ✅ **p50 56 ms**, p95 77, max 104 |
+| 1.2 | Generation speed | > 60 tok/s | ✅ **95 tok/s** p50, min 91 (history ~1.7k tokens) |
+| 1.2 | Prompt prefix cache (`prompt_eval_cached_count`) | reused | ✅ 30/30 turns. Last turn 1718/1737 prompt tokens cached |
+| 1.2 | Token estimate vs real `prompt_eval_count` | ≥ 1 (safe) | ✅ 1.37–1.41× (conservative) |
+| 1.2 | `think: false` | no thinking | ✅ no `thinking` field, no `<think>` text |
+| 1.2 | Cancel after 5 tokens → GPU | idle | ✅ control 96% busy → **6% mean** 0.2–1.5 s after cancel. Ollama log `stop: cancel task` |
+| 1.2 | New request right after a cancel (`OLLAMA_NUM_PARALLEL=1`) | not delayed | ✅ TTFT 52 ms vs 56 ms normal |
+| 1.2 | Warm-up with the real options (stops after the first token) | — | 223 ms with the model already loaded |

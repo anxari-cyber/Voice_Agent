@@ -1,6 +1,5 @@
 import numpy as np
 
-from agent.ollama_client import OllamaClient
 from config.settings import Settings
 from voice.audio_devices import AudioDevice
 from voice.microphone import Microphone
@@ -14,30 +13,6 @@ def test_default_settings() -> None:
     assert settings.tts_engine == "kokoro"
     assert settings.project_root is None
     assert settings.mic_device is None
-
-
-def test_ollama_client_sends_request_and_returns_text(monkeypatch) -> None:
-    captured = {}
-
-    class FakeResponse:
-        def raise_for_status(self) -> None:
-            return None
-
-        def json(self) -> dict:
-            return {"response": "  Calculator ready.  "}
-
-    def fake_post(url, json, timeout):
-        captured.update(url=url, json=json)
-        return FakeResponse()
-
-    monkeypatch.setattr("agent.ollama_client.httpx.post", fake_post)
-
-    result = OllamaClient("http://127.0.0.1:11434/", "qwen3:4b").generate("Create a calculator")
-
-    assert result == "Calculator ready."
-    assert captured["url"] == "http://127.0.0.1:11434/api/generate"
-    assert captured["json"]["model"] == "qwen3:4b"
-    assert captured["json"]["prompt"] == "Create a calculator"
 
 
 def test_microphone_records_from_speech_until_silence(monkeypatch) -> None:

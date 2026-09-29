@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import time
 
-from agent.ollama_client import OllamaClient, OllamaError
+from agent.llm import LLMError, OllamaLLM
+from agent.memory import Memory
+from agent.prompt import PromptBuilder
 from config.settings import load_settings
 from metrics.latency import LatencyLog
 from voice.microphone import Microphone
@@ -73,13 +75,24 @@ def run(args: argparse.Namespace) -> None:
         return
 
     # Temporary bridge until the streaming pipeline (roadmap Step 1.5) replaces this file.
-    llm = OllamaClient(settings.llm_url, settings.llm_model, num_predict=settings.llm_max_tokens)
+    llm = OllamaLLM(settings.llm_url, settings.llm_model, settings.llm_num_ctx, settings.llm_max_tokens)
+    builder = PromptBuilder.from_file(
+        settings.system_prompt_file, settings.llm_num_ctx, settings.llm_max_tokens
+    )
     try:
-        response = llm.generate(transcription)
+        print(f"{settings.llm_model}: ", end="", flush=True)
+        first = True
+        for delta in llm.stream(builder.build(Memory(), transcription)):
+            if delta.content and first:
+                latency.mark("llm_first_token")
+                first = False
+            print(delta.content, end="", flush=True)
         latency.mark("llm_done")
-        print(f"{settings.llm_model}: {response}")
-    except OllamaError as error:
-        print(f"Ollama is unavailable: {error}")
+        print()
+    except LLMError as error:
+        print(f"\nOllama is unavailable: {error}")
+    finally:
+        llm.close()
 
 
 def main() -> None:

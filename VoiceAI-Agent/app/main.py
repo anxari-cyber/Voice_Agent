@@ -71,7 +71,9 @@ def run(args: argparse.Namespace) -> None:
     vad = SileroVAD(threshold=settings.vad_threshold, start_ms=settings.vad_start_ms,
                     end_ms=settings.vad_end_ms)
     frontend = AudioFrontEnd(audio, vad, stt, pre_roll_ms=settings.pre_roll_ms,
-                             join_window_ms=settings.join_window_ms, latency=latency)
+                             join_window_ms=settings.join_window_ms, latency=latency,
+                             min_speech_ms=settings.min_speech_ms,
+                             on_ignored=lambda text, why: print(f"  [ignored: {text!r} - {why}]", flush=True))
     audio.on_mic_change = frontend.reset_audio
     orchestrator = Orchestrator(frontend, llm, builder, Memory(), tts, player, latency=latency,
                                 warmer=warmer, chunker_factory=ClauseChunker)

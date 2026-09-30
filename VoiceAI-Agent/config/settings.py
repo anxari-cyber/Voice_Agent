@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     vad_end_ms: int = 200
     pre_roll_ms: int = 500
     join_window_ms: int = 700
+    min_speech_ms: int = 350  # shorter turns (clicks, breaths, noise) are ignored
     bargein_min_ms: int = 160
     smart_turn_threshold: float = 0.5
 

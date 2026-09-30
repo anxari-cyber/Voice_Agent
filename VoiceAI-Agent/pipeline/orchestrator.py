@@ -43,6 +43,7 @@ from pipeline.events import (
     TurnReopen,
 )
 from pipeline.tts_worker import TTSWorker
+from pipeline.turn_filter import ignore_reason
 
 SAMPLE_RATE = 16_000
 
@@ -60,13 +61,15 @@ class _Pending:
     text: str
     speech_end: float
     final_ready: float
+    speech_s: float = 0.0
 
 
 class AudioFrontEnd:
     """Mic blocks in, turn events out. Runs in its own thread."""
 
     def __init__(self, source: AudioSource, vad, stt, emit: Callable[[object], None] | None = None,
-                 pre_roll_ms: int = 500, join_window_ms: int = 700, latency: LatencyLog | None = None):
+                 pre_roll_ms: int = 500, join_window_ms: int = 700, latency: LatencyLog | None = None,
+                 min_speech_ms: int = 350, on_ignored: Callable[[str, str], None] | None = None):
         self.source = source
         self.vad = vad
         self.stt = stt
@@ -74,6 +77,9 @@ class AudioFrontEnd:
         self.pre_roll_blocks = max(1, pre_roll_ms // 20)
         self.join_window = join_window_ms / 1000
         self.latency = latency
+        self.min_speech_s = min_speech_ms / 1000
+        self.on_ignored = on_ignored or (lambda text, reason: None)
+        self.ignored = 0
         self.listening = threading.Event()
         self.listening.set()
         self._stop = threading.Event()
@@ -117,6 +123,8 @@ class AudioFrontEnd:
         # agent speaks are not counted, and the counter restarts with the VAD.
         vad_samples = origin = 0
         shown = ""
+        speech_s = 0.0  # detected speech in this turn, summed over its pauses
+        segment_start = 0.0
         while not self._stop.is_set():
             try:
                 arrived, block = self.source.read(timeout=0.1)
@@ -129,6 +137,7 @@ class AudioFrontEnd:
                 self.stt.cancel()
                 pre_roll.clear()
                 gap, pending, shown = [], None, ""
+                speech_s = 0.0
             if not self.listening.is_set() or block is None:
                 if block is not None:
                     pre_roll.append(block)
@@ -146,6 +155,7 @@ class AudioFrontEnd:
             for event in events:
                 happened = arrived - (vad_samples - event.sample) / SAMPLE_RATE
                 if event.kind == "speech_start":
+                    segment_start = happened
                     if pending:  # a pause inside the join window: the same turn goes on
                         self.stt.resume(np.concatenate(gap) if gap else None)
                         pending, gap = None, []
@@ -157,6 +167,7 @@ class AudioFrontEnd:
                     self.stt.start(pre)
                     pre_roll.clear()
                     shown = ""
+                    speech_s = 0.0
                     if self.latency:
                         self.latency.next_turn()
                     self._mark("speech_start", at=happened)
@@ -165,7 +176,8 @@ class AudioFrontEnd:
                     text = self.stt.finish(speech_end_sample=event.sample - origin)
                     ready = time.perf_counter()
                     info = self.stt.last_final
-                    pending = _Pending(text, happened, ready)
+                    speech_s += max(0.0, happened - segment_start)
+                    pending = _Pending(text, happened, ready, speech_s)
                     self._mark("speech_end", at=happened)
                     self._mark("stt_final", at=ready, mode=info.get("mode"))
                     self.emit(SpeechEnd(happened))
@@ -176,6 +188,13 @@ class AudioFrontEnd:
                 self.emit(PartialText(shown))
 
             if pending and arrived - pending.speech_end >= self.join_window:
+                reason = ignore_reason(pending.text, pending.speech_s, self.min_speech_s)
+                if reason:  # noise / a filler sound: don't answer, keep listening
+                    self.ignored += 1
+                    self.on_ignored(pending.text, reason)
+                    self.stt.cancel()
+                    pending, gap, speech_s = None, [], 0.0
+                    continue
                 now = time.perf_counter()
                 self.listening.clear()  # the orchestrator resumes listening after the answer
                 self._mark("turn_commit", at=now)

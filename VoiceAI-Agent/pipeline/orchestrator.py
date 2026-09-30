@@ -196,6 +196,8 @@ class TurnStats:
     commit: float = 0.0
     events: dict[str, float] = field(default_factory=dict)
     error: str = ""
+    spoken_s: float = 0.0  # seconds of speech that reached the sound card
+    speaker: str = ""  # which speaker it went to
 
     def ms(self, start: str, end: str) -> float | None:
         points = {"speech_end": self.speech_end, "stt_final": self.final_ready,
@@ -211,6 +213,8 @@ class ConsoleUI:
     def state(self, name: str) -> None:
         if name == "listening":
             print("\n[listening]", flush=True)
+        elif name == "speaking":
+            print("[speaking - not listening until the answer ends]", flush=True)
 
     def user_partial(self, text: str) -> None:
         print(f"\r  You: {text} ...", end="", flush=True)
@@ -234,6 +238,7 @@ class ConsoleUI:
             print("   [" + " | ".join(shown) + "]", flush=True)
         if stats.error:
             print(f"   [error: {stats.error}]", flush=True)
+        print(f"   [spoke {stats.spoken_s:.1f} s on {stats.speaker or 'no speaker'}]", flush=True)
 
 
 class Orchestrator:
@@ -359,6 +364,10 @@ class Orchestrator:
         self.player.end_utterance()
         stats.answer = "".join(answer).strip()
         stats.events = dict(self._events)
+        stats.spoken_s = self.player.played_samples / getattr(self.player, "sample_rate", 24_000)
+        device = getattr(self.player, "device", None)
+        if device is not None and getattr(self.player, "is_open", True):
+            stats.speaker = device.label
         heard = self.worker.heard_text(self.player.played_samples) or stats.answer
         self.memory.add_user(commit.text)
         if heard:
